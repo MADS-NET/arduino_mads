@@ -6,7 +6,11 @@
 //
 // Pin lists and loop delay come from the broker's settings reply, not from
 // this sketch, so they can be changed by editing mads.ini without
-// reflashing the board.
+// reflashing the board. agent_id/hostname/millis are added automatically by
+// agent.publish(doc) -- see Mads::Agent's class doc.
+//
+// No need to #include <ArduinoJson.h> here -- MadsUnoAgent.h already pulls
+// it in (Agent::publish(JsonDocument&) depends on it directly).
 #include <MadsUnoAgent.h>
 #include "arduino_secrets.h" // copy from arduino_secrets.h.example, gitignored
 
@@ -17,7 +21,7 @@ const uint16_t SETTINGS_PORT = 9092; // mads.ini [broker] settings_address port
 const char *AGENT_NAME = "uno_r4";    // must match the ini section name
 
 Mads::Agent agent;
-char json_buf[192];
+JsonDocument doc;
 
 const size_t MAX_PINS = 8;
 int ai_pins[MAX_PINS];
@@ -45,7 +49,11 @@ void setup() {
   for (size_t i = 0; i < di_count; ++i)
     pinMode(di_pins[i], INPUT);
 
-  Serial.print("MADS agent ready: frontend_port=");
+  Serial.print("MADS agent ready: agent_id=");
+  Serial.print(agent.agent_id());
+  Serial.print(" hostname=");
+  Serial.print(agent.hostname());
+  Serial.print(" frontend_port=");
   Serial.print(agent.frontend_port());
   Serial.print(" backend_port=");
   Serial.print(agent.backend_port());
@@ -58,20 +66,17 @@ void setup() {
 }
 
 void loop() {
-  size_t pos = 0;
-  pos += snprintf(json_buf + pos, sizeof(json_buf) - pos, "{\"ai\":[");
+  doc.clear();
+  JsonArray ai = doc["ai"].to<JsonArray>();
   for (size_t i = 0; i < ai_count; ++i)
-    pos += snprintf(json_buf + pos, sizeof(json_buf) - pos, "%s%d",
-                    i ? "," : "", analogRead(ai_pins[i]));
-  pos += snprintf(json_buf + pos, sizeof(json_buf) - pos, "],\"di\":[");
+    ai.add(analogRead(ai_pins[i]));
+  JsonArray di = doc["di"].to<JsonArray>();
   for (size_t i = 0; i < di_count; ++i)
-    pos += snprintf(json_buf + pos, sizeof(json_buf) - pos, "%s%d",
-                    i ? "," : "", digitalRead(di_pins[i]));
-  pos += snprintf(json_buf + pos, sizeof(json_buf) - pos, "]}");
+    di.add(digitalRead(di_pins[i]));
 
-  bool ok = agent.publish(json_buf, pos);
+  bool ok = agent.publish(doc);
   Serial.print(ok ? "published " : "publish FAILED ");
-  Serial.println(json_buf);
+  Serial.println(agent.last_publish_json());
 
   delay(loop_delay_ms);
 }

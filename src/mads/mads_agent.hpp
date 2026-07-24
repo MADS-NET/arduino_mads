@@ -1,6 +1,7 @@
 #pragma once
 #include "toml_scan.hpp"
 #include "wifi_transport.hpp"
+#include <ArduinoJson.h>
 #include <cstddef>
 #include <cstdint>
 
@@ -21,10 +22,18 @@ namespace Mads {
  *
  * Deliberately out of scope, matching this library's narrow purpose: CURVE
  * encryption, MsgPack, Snappy compression, blob/binary payloads, dynamic
- * re-subscription, settings persistence, and the timecode REQ/REP exchange
- * (the desktop Agent's clock-offset sync -- unused by anything else in this
- * library, so it is not fetched). Callers own JSON encoding/decoding
- * (e.g. with ArduinoJson); this class only handles wire framing.
+ * re-subscription, and settings persistence.
+ *
+ * publish(JsonDocument&) merges the caller's payload with the standard
+ * MADS envelope fields every desktop agent's messages carry -- `agent_id`,
+ * `hostname` -- plus `millis` in place of the desktop Agent's `timecode`/
+ * `timestamp` (there is no RTC on this board, so a monotonic
+ * milliseconds-since-boot counter stands in for wall-clock time). This is
+ * why ArduinoJson is a real dependency of this class, not just a suggestion
+ * for callers: merging fields into an arbitrary caller-built document
+ * requires understanding its structure, not just forwarding opaque bytes.
+ * The lower-level publish(const char*, size_t) overload -- plain wire
+ * framing, no merge -- remains available beneath it.
  *
  * Usage shape: call begin() once from setup() (blocking, does the settings
  * REQ/REP exchange and opens the PUB connection); call publish() and,
@@ -32,7 +41,13 @@ namespace Mads {
  */
 class Agent {
 public:
-  Agent() = default;
+  /**
+   * @param agent_id Explicit agent identifier. If null/empty (the
+   *  default), the agent_id merged into published messages falls back to
+   *  this board's WiFi MAC address (colon-separated hex), resolved once
+   *  begin() has joined WiFi.
+   */
+  explicit Agent(const char *agent_id = nullptr);
 
   /**
    * Joins WiFi (if not already connected), fetches settings from the
@@ -63,8 +78,18 @@ public:
   bool subscribe(const char *topic);
 
   /// Publishes `json_len` bytes of uncompressed JSON text under `topic`
-  /// (or this agent's default pub_topic if `topic` is null).
+  /// (or this agent's default pub_topic if `topic` is null). Low-level:
+  /// sends `json` verbatim, no envelope fields merged in.
   bool publish(const char *json, size_t json_len, const char *topic = nullptr);
+
+  /**
+   * Merges `agent_id`, `hostname` and `millis` into `payload` (mutating it
+   * in place), serializes the result, and publishes it -- the standard,
+   * recommended way to publish from this library. See the class doc for
+   * why these particular fields and why ArduinoJson is required for this
+   * overload.
+   */
+  bool publish(JsonDocument &payload, const char *topic = nullptr);
 
   /**
    * Non-blocking: if a message is waiting on the SUB connection, decodes it
@@ -85,6 +110,16 @@ public:
   int timecode_fps() const { return _timecode_fps; }
   uint16_t frontend_port() const { return _frontend_port; }
   uint16_t backend_port() const { return _backend_port; }
+
+  /// The agent_id merged into published messages: the constructor-given
+  /// value, or (once begin() has joined WiFi) the MAC-address fallback.
+  const char *agent_id() const { return _agent_id; }
+  /// The hostname merged into published messages: this board's local IP,
+  /// resolved once begin() has joined WiFi.
+  const char *hostname() const { return _hostname; }
+  /// The exact JSON text sent by the most recent publish(JsonDocument&)
+  /// call -- for logging/diagnostics.
+  const char *last_publish_json() const { return _publish_buf; }
 
   /**
    * Per-agent settings, read from the `[agent_name]` section of the same
@@ -115,6 +150,14 @@ private:
   int _timecode_fps = 25;
   bool _sub_connected = false;
   TomlScan _settings_scan;
+
+  static constexpr size_t AGENT_ID_CAP = 32;  // fits "AA:BB:CC:DD:EE:FF" + room for a custom id
+  static constexpr size_t HOSTNAME_CAP = 16;  // "255.255.255.255\0"
+  static constexpr size_t PUBLISH_BUF_CAP = 256;
+  char _agent_id[AGENT_ID_CAP] = {0};
+  bool _agent_id_explicit = false;
+  char _hostname[HOSTNAME_CAP] = {0};
+  char _publish_buf[PUBLISH_BUF_CAP] = {0};
 };
 
 } // namespace Mads

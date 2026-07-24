@@ -5,6 +5,14 @@
 
 namespace Mads {
 
+Agent::Agent(const char *agent_id) {
+  if (agent_id && agent_id[0] != '\0') {
+    strncpy(_agent_id, agent_id, sizeof(_agent_id) - 1);
+    _agent_id[sizeof(_agent_id) - 1] = '\0';
+    _agent_id_explicit = true;
+  }
+}
+
 bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
                   uint16_t settings_port, const char *agent_name,
                   const char *pub_topic, uint32_t timeout_ms) {
@@ -19,6 +27,31 @@ bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
         return false;
       delay(100);
     }
+  }
+
+  // WL_CONNECTED (AP association) can fire before DHCP has actually
+  // assigned an IP -- wait explicitly for a real address rather than
+  // relying on incidental delays elsewhere (seen failing intermittently
+  // during bring-up: WiFi.localIP() still read back 0.0.0.0 otherwise).
+  {
+    uint32_t start = millis();
+    IPAddress ip = WiFi.localIP();
+    while (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0) {
+      if (millis() - start > timeout_ms)
+        return false;
+      delay(100);
+      ip = WiFi.localIP();
+    }
+    snprintf(_hostname, sizeof(_hostname), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+  }
+
+  if (!_agent_id_explicit) {
+    // WiFi.macAddress() fills mac[] in reverse byte order -- a well-known
+    // quirk shared by WiFiNINA/WiFiS3, so mac[5] is the first byte printed.
+    byte mac[6];
+    WiFi.macAddress(mac);
+    snprintf(_agent_id, sizeof(_agent_id), "%02X:%02X:%02X:%02X:%02X:%02X",
+            mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
   }
 
   if (!fetch_settings(agent_name, settings_port, timeout_ms))
@@ -166,6 +199,17 @@ bool Agent::publish(const char *json, size_t json_len, const char *topic) {
          ZmtpCodec::send_frame(_pub_transport,
                                reinterpret_cast<const uint8_t *>(json),
                                json_len, false);
+}
+
+bool Agent::publish(JsonDocument &payload, const char *topic) {
+  payload["agent_id"] = _agent_id;
+  payload["hostname"] = _hostname;
+  payload["millis"] = millis();
+
+  size_t len = serializeJson(payload, _publish_buf, sizeof(_publish_buf));
+  if (len == 0)
+    return false;
+  return publish(_publish_buf, len, topic);
 }
 
 bool Agent::poll(char *topic_out, size_t topic_cap, uint8_t *payload_out,

@@ -1,6 +1,9 @@
 // Minimal MADS agent: publishes an analog reading once per loop iteration.
 // No subscription -- this is the smallest useful shape (setup() fetches
 // settings and opens the PUB connection; loop() only publishes).
+//
+// No need to #include <ArduinoJson.h> here -- MadsUnoAgent.h already pulls
+// it in (Agent::publish(JsonDocument&) depends on it directly).
 #include <MadsUnoAgent.h>
 #include "arduino_secrets.h" // copy from arduino_secrets.h.example, gitignored
 
@@ -10,7 +13,7 @@ const char *BROKER_HOST = SECRET_BROKER_HOST;
 const uint16_t SETTINGS_PORT = 9092; // mads.ini [broker] settings_address port
 
 Mads::Agent agent;
-char json_buf[128];
+JsonDocument doc;
 
 void setup() {
   Serial.begin(115200);
@@ -20,8 +23,13 @@ void setup() {
 }
 
 void loop() {
-  int value = analogRead(A0);
-  size_t len = snprintf(json_buf, sizeof(json_buf), "{\"a0\":%d}", value);
-  agent.publish(json_buf, len);
+  doc.clear();
+  doc["a0"] = analogRead(A0);
+
+  // agent_id/hostname/millis are added automatically -- see Mads::Agent's class doc.
+  bool ok = agent.publish(doc);
+  Serial.print(ok ? "published " : "publish FAILED ");
+  Serial.println(agent.last_publish_json());
+
   delay(200);
 }
