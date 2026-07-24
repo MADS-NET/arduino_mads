@@ -99,3 +99,13 @@ failed intermittently on reboot (`hostname` came back `"0.0.0.0"`, settings neve
 
 Not yet exercised on hardware: the SUB/poll() path (`examples/pub_sub`) and CURVE-enabled brokers
 (out of scope by design -- see above).
+
+---
+
+# License
+
+MIT, see [LICENSE](LICENSE) for details.
+
+# Author
+
+Paolo Bosetti, University of Trento, Italy,
