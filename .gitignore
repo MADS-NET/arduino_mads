@@ -1,0 +1,4 @@
+.pio/
+build/
+*.o
+.DS_Store

@@ -1,0 +1,25 @@
+#######################################
+# Syntax Coloring Map for MadsUnoAgent
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+Agent	KEYWORD1
+Transport	KEYWORD1
+WifiTransport	KEYWORD1
+ZmtpCodec	KEYWORD1
+TomlScan	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+begin	KEYWORD2
+connect_sub	KEYWORD2
+subscribe	KEYWORD2
+publish	KEYWORD2
+poll	KEYWORD2
+connected	KEYWORD2
+timecode_fps	KEYWORD2
