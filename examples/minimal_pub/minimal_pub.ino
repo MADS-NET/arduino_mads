@@ -2,11 +2,12 @@
 // No subscription -- this is the smallest useful shape (setup() fetches
 // settings and opens the PUB connection; loop() only publishes).
 #include <MadsUnoAgent.h>
+#include "arduino_secrets.h" // copy from arduino_secrets.h.example, gitignored
 
-const char *WIFI_SSID = "your-ssid";
-const char *WIFI_PASS = "your-password";
-const char *BROKER_HOST = "192.168.1.10"; // the mads-broker's IP
-const uint16_t SETTINGS_PORT = 9092;      // mads.ini [broker] settings_address port
+const char *WIFI_SSID = SECRET_WIFI_SSID;
+const char *WIFI_PASS = SECRET_WIFI_PASS;
+const char *BROKER_HOST = SECRET_BROKER_HOST;
+const uint16_t SETTINGS_PORT = 9092; // mads.ini [broker] settings_address port
 
 Mads::Agent agent;
 char json_buf[128];

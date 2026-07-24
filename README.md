@@ -34,8 +34,15 @@ receives, and `examples/uno_r4_sensor` for one driven entirely by its own `mads.
 
 ## Status
 
-Scaffolding, unverified on real hardware yet. The wire-protocol logic (`src/mads/zmtp_codec.*`,
-`src/mads/toml_scan.*`) is written against an abstract `Transport` interface rather than directly
-against `WiFiClient`, so it can be unit-tested on a desktop machine against a real `mads-broker`
-before ever touching a board. The open risk is the UNO R4 WiFi's total 32KB SRAM budget, most of
-which is expected to be consumed by the WiFiS3 framework itself rather than by this library.
+Verified end-to-end on real hardware (Arduino UNO R4 WiFi) against an unmodified, real
+`mads-broker` and a real desktop `mads-feedback` subscriber (both built on full libzmq/zmqpp):
+settings REQ/REP (including per-agent `[uno_r4]` section parsing) and PUB messaging both work,
+with published JSON correctly decoded on the desktop side.
+
+Measured footprint for `examples/uno_r4_sensor` (`arduino-cli compile --fqbn
+arduino:renesas_uno:unor4wifi`): 63,660 bytes flash (24% of 262,144) and 8,504 bytes of global
+RAM (25% of 32,768), leaving 24,264 bytes free -- comfortably under budget; the WiFiS3 framework's
+own footprint turned out smaller than initially estimated.
+
+Not yet exercised on hardware: the SUB/poll() path (`examples/pub_sub`) and CURVE-enabled brokers
+(out of scope by design -- see above).

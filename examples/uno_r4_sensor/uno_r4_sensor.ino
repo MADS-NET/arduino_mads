@@ -8,12 +8,13 @@
 // this sketch, so they can be changed by editing mads.ini without
 // reflashing the board.
 #include <MadsUnoAgent.h>
+#include "arduino_secrets.h" // copy from arduino_secrets.h.example, gitignored
 
-const char *WIFI_SSID = "your-ssid";
-const char *WIFI_PASS = "your-password";
-const char *BROKER_HOST = "192.168.1.10"; // the mads-broker's IP
-const uint16_t SETTINGS_PORT = 9092;      // mads.ini [broker] settings_address port
-const char *AGENT_NAME = "uno_r4";        // must match the ini section name
+const char *WIFI_SSID = SECRET_WIFI_SSID;
+const char *WIFI_PASS = SECRET_WIFI_PASS;
+const char *BROKER_HOST = SECRET_BROKER_HOST;
+const uint16_t SETTINGS_PORT = 9092; // mads.ini [broker] settings_address port
+const char *AGENT_NAME = "uno_r4";    // must match the ini section name
 
 Mads::Agent agent;
 char json_buf[192];
@@ -27,6 +28,9 @@ int loop_delay_ms = 100;
 
 void setup() {
   Serial.begin(115200);
+  delay(2000); // give the serial monitor time to attach after reset
+
+  Serial.println("Joining WiFi + fetching MADS settings...");
   bool ok = agent.begin(WIFI_SSID, WIFI_PASS, BROKER_HOST, SETTINGS_PORT,
                         AGENT_NAME, AGENT_NAME);
   if (!ok) {
@@ -41,7 +45,16 @@ void setup() {
   for (size_t i = 0; i < di_count; ++i)
     pinMode(di_pins[i], INPUT);
 
-  Serial.println("MADS agent ready");
+  Serial.print("MADS agent ready: frontend_port=");
+  Serial.print(agent.frontend_port());
+  Serial.print(" backend_port=");
+  Serial.print(agent.backend_port());
+  Serial.print(" ai_count=");
+  Serial.print(ai_count);
+  Serial.print(" di_count=");
+  Serial.print(di_count);
+  Serial.print(" delay_ms=");
+  Serial.println(loop_delay_ms);
 }
 
 void loop() {
@@ -56,6 +69,9 @@ void loop() {
                     i ? "," : "", digitalRead(di_pins[i]));
   pos += snprintf(json_buf + pos, sizeof(json_buf) - pos, "]}");
 
-  agent.publish(json_buf, pos);
+  bool ok = agent.publish(json_buf, pos);
+  Serial.print(ok ? "published " : "publish FAILED ");
+  Serial.println(json_buf);
+
   delay(loop_delay_ms);
 }
