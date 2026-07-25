@@ -19,6 +19,22 @@ directly over WiFi, with no host-PC bridge involved:
 - PUB messaging against the broker's XSUB (frontend) port.
 - Optional SUB messaging (with topic subscriptions) against the broker's XPUB (backend) port,
   polled non-blockingly from `loop()`.
+- Self-healing links: a failed `publish()` (or a dropped SUB socket) puts that link into a
+  reconnecting state, retried at most once per `set_reconnect_interval()` (default 1s) so a dead
+  broker can't turn `loop()` into a busy spin. Reconnecting rejoins WiFi if needed, re-fetches
+  settings, and replays SUB subscriptions -- ZMTP subscriptions are per-connection, so a fresh
+  socket would otherwise go silent. The same path covers "the board booted before the broker
+  existed": `begin()` may fail, but a `loop()` that keeps publishing connects once the broker
+  appears (watch `settings_ok()` to know when per-agent settings finally arrived).
+  Caveat: Arduino's `Client` API has no non-blocking connect, so one attempt against an
+  unreachable host still blocks `loop()` for however long `WiFiClient::connect()` takes to give
+  up; the interval bounds how *often* that happens, not how long an attempt lasts.
+  For SUB, the primary liveness signal is the transport's `connected()` -- definitive and never a
+  false positive. `set_sub_silence_timeout()` adds an optional "no data for N ms means dead"
+  watchdog for half-open connections, but is **off by default on purpose**: a SUB socket is
+  passive, so silence is indistinguishable from a genuinely quiet topic, and an eager timer would
+  tear down healthy links on low-rate topics. Enable it only when you expect traffic at a known
+  minimum rate.
 - JSON payloads only, uncompressed (`format=Json`, `compression=None` in the MADS wire header) --
   no MsgPack, no Snappy compression, no CURVE encryption.
 - Standard MADS envelope fields: `Agent::publish(JsonDocument&)` merges `agent_id`, `hostname` and
@@ -80,15 +96,16 @@ install arduino:renesas_uno`, or via Boards Manager in the IDE).
 ## Status
 
 Verified end-to-end on real hardware (Arduino UNO R4 WiFi) against an unmodified, real
-`mads-broker` and a real desktop `mads-feedback` subscriber (both built on full libzmq/zmqpp):
+`mads broker` and a real desktop `mads feedback` subscriber (both built on full libzmq/zmqpp):
 settings REQ/REP (including per-agent `[uno_r4]` section parsing), PUB messaging, and the
 ArduinoJson-based standard envelope (`agent_id`/`hostname`/`millis`) all work, with published JSON
-correctly decoded on the desktop side.
+correctly decoded on the desktop side. PUB reconnection was verified by stopping and restarting
+the broker under a running board: it recovers on its own, with no reset.
 
-Measured footprint for `examples/uno_r4_sensor` with ArduinoJson (`arduino-cli compile --fqbn
-arduino:renesas_uno:unor4wifi`): ~69KB flash (26% of 262,144) and ~8.7KB of global RAM (26% of
-32,768), leaving ~24KB free -- comfortably under budget; the WiFiS3 framework's own footprint
-turned out smaller than initially estimated.
+Measured footprint for `examples/uno_r4_sensor` with ArduinoJson and reconnect support
+(`arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi`): ~70KB flash (26% of 262,144) and
+~8.8KB of global RAM (26% of 32,768), leaving ~24KB free -- comfortably under budget; the WiFiS3
+framework's own footprint turned out smaller than initially estimated.
 
 Fixed timing issue: `WL_CONNECTED` (WiFi association) can fire before DHCP has actually assigned
 an IP. An earlier version relied on `fetch_settings()`'s network round-trips to incidentally give
@@ -97,8 +114,9 @@ failed intermittently on reboot (`hostname` came back `"0.0.0.0"`, settings neve
 `begin()` now waits explicitly, in a bounded loop, for a non-zero `WiFi.localIP()` right after
 `WL_CONNECTED` before doing anything else network-dependent.
 
-Not yet exercised on hardware: the SUB/poll() path (`examples/pub_sub`) and CURVE-enabled brokers
-(out of scope by design -- see above).
+Not yet exercised on hardware: the SUB/poll() path (`examples/pub_sub`) -- including its
+reconnect/subscription-replay branch and the optional silence watchdog -- and CURVE-enabled
+brokers (out of scope by design -- see above).
 
 ---
 

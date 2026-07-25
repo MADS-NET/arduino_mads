@@ -42,6 +42,17 @@ void TomlScan::finish() {
   }
 }
 
+void TomlScan::reset() {
+  _line_len = 0;
+  _in_agents_section = false;
+  _in_watched_section = false;
+  _done = false;
+  _frontend_port = 0;
+  _backend_port = 0;
+  _timecode_fps = 0;
+  _entry_count = 0;
+}
+
 void TomlScan::on_line(const char *line, size_t len) {
   const char *s = line;
   const char *end = line + len;

@@ -16,11 +16,31 @@ Agent::Agent(const char *agent_id) {
 bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
                   uint16_t settings_port, const char *agent_name,
                   const char *pub_topic, uint32_t timeout_ms) {
+  _ssid = ssid;
+  _pass = pass;
   _broker_host = broker_host;
   _pub_topic = pub_topic;
+  _agent_name = agent_name;
+  _settings_port = settings_port;
+  _timeout_ms = timeout_ms;
 
+  if (!ensure_wifi(timeout_ms))
+    return false;
+  if (!fetch_settings(timeout_ms))
+    return false;
+
+  if (!_pub_transport.connect(_broker_host, _frontend_port))
+    return false;
+  if (!ZmtpCodec::handshake_null(_pub_transport, "PUB", timeout_ms)) {
+    _pub_transport.close();
+    return false;
+  }
+  return true;
+}
+
+bool Agent::ensure_wifi(uint32_t timeout_ms) {
   if (WiFi.status() != WL_CONNECTED) {
-    WiFi.begin(ssid, pass);
+    WiFi.begin(_ssid, _pass);
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED) {
       if (millis() - start > timeout_ms)
@@ -33,19 +53,18 @@ bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
   // assigned an IP -- wait explicitly for a real address rather than
   // relying on incidental delays elsewhere (seen failing intermittently
   // during bring-up: WiFi.localIP() still read back 0.0.0.0 otherwise).
-  {
-    uint32_t start = millis();
-    IPAddress ip = WiFi.localIP();
-    while (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0) {
-      if (millis() - start > timeout_ms)
-        return false;
-      delay(100);
-      ip = WiFi.localIP();
-    }
-    snprintf(_hostname, sizeof(_hostname), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+  // Re-read on every rejoin: DHCP may hand out a different address.
+  uint32_t start = millis();
+  IPAddress ip = WiFi.localIP();
+  while (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0) {
+    if (millis() - start > timeout_ms)
+      return false;
+    delay(100);
+    ip = WiFi.localIP();
   }
+  snprintf(_hostname, sizeof(_hostname), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
 
-  if (!_agent_id_explicit) {
+  if (!_agent_id_explicit && _agent_id[0] == '\0') {
     // WiFi.macAddress() fills mac[] in reverse byte order -- a well-known
     // quirk shared by WiFiNINA/WiFiS3, so mac[5] is the first byte printed.
     byte mac[6];
@@ -53,23 +72,85 @@ bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
     snprintf(_agent_id, sizeof(_agent_id), "%02X:%02X:%02X:%02X:%02X:%02X",
             mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
   }
+  return true;
+}
 
-  if (!fetch_settings(agent_name, settings_port, timeout_ms))
+bool Agent::ensure_pub_link() {
+  if (_pub_transport.connected())
+    return true;
+  if (!_broker_host)
     return false;
 
+  // Rate-limit: at most one attempt per interval. _pub_attempted guards the
+  // very first call, where a zero _last_pub_attempt would otherwise be
+  // indistinguishable from "just tried" during the first interval after boot.
+  uint32_t now = millis();
+  if (_pub_attempted && (now - _last_pub_attempt) < _reconnect_interval_ms)
+    return false;
+  _pub_attempted = true;
+  _last_pub_attempt = now;
+
+  _pub_transport.close();
+  if (!ensure_wifi(_timeout_ms))
+    return false;
+  // Covers the broker having been unreachable when begin() ran: without
+  // valid settings we don't know the real frontend port yet.
+  if (!_settings_ok && !fetch_settings(_timeout_ms))
+    return false;
   if (!_pub_transport.connect(_broker_host, _frontend_port))
     return false;
-  if (!ZmtpCodec::handshake_null(_pub_transport, "PUB", timeout_ms)) {
+  if (!ZmtpCodec::handshake_null(_pub_transport, "PUB", _timeout_ms)) {
     _pub_transport.close();
     return false;
   }
   return true;
 }
 
-bool Agent::fetch_settings(const char *agent_name, uint16_t settings_port,
-                           uint32_t timeout_ms) {
+bool Agent::ensure_sub_link() {
+  if (_sub_transport.connected())
+    return true;
+  if (!_broker_host)
+    return false;
+
+  uint32_t now = millis();
+  if (_sub_attempted && (now - _last_sub_attempt) < _reconnect_interval_ms)
+    return false;
+  _sub_attempted = true;
+  _last_sub_attempt = now;
+
+  _sub_transport.close();
+  if (!ensure_wifi(_timeout_ms))
+    return false;
+  if (!_settings_ok && !fetch_settings(_timeout_ms))
+    return false;
+  if (!_sub_transport.connect(_broker_host, _backend_port))
+    return false;
+  if (!ZmtpCodec::handshake_null(_sub_transport, "SUB", _timeout_ms)) {
+    _sub_transport.close();
+    return false;
+  }
+
+  // ZMTP subscriptions are per-connection state: a fresh socket has none,
+  // so every remembered topic must be re-sent or this link would go silent.
+  for (size_t i = 0; i < _sub_topic_count; ++i) {
+    if (!ZmtpCodec::send_subscription(_sub_transport, _sub_topics[i], true)) {
+      _sub_transport.close();
+      return false;
+    }
+  }
+  _last_sub_rx = millis();
+  return true;
+}
+
+bool Agent::fetch_settings(uint32_t timeout_ms) {
+  const char *agent_name = _agent_name;
+  // A scanner that already consumed one reply would otherwise append
+  // duplicate watched-section entries and report done() from the old run.
+  _settings_scan.reset();
+  _settings_ok = false;
+
   WifiTransport settings_transport;
-  if (!settings_transport.connect(_broker_host, settings_port))
+  if (!settings_transport.connect(_broker_host, _settings_port))
     return false;
   if (!ZmtpCodec::handshake_null(settings_transport, "REQ", timeout_ms)) {
     settings_transport.close();
@@ -157,10 +238,12 @@ bool Agent::fetch_settings(const char *agent_name, uint16_t settings_port,
   _backend_port = _settings_scan.backend_port();
   _timecode_fps =
       _settings_scan.timecode_fps() > 0 ? _settings_scan.timecode_fps() : 25;
+  _settings_ok = true;
   return true;
 }
 
 bool Agent::connect_sub(uint32_t timeout_ms) {
+  _want_sub = true;
   if (!_broker_host)
     return false;
   if (!_sub_transport.connect(_broker_host, _backend_port))
@@ -169,18 +252,42 @@ bool Agent::connect_sub(uint32_t timeout_ms) {
     _sub_transport.close();
     return false;
   }
-  _sub_connected = true;
+  for (size_t i = 0; i < _sub_topic_count; ++i) {
+    if (!ZmtpCodec::send_subscription(_sub_transport, _sub_topics[i], true)) {
+      _sub_transport.close();
+      return false;
+    }
+  }
+  _last_sub_rx = millis();
   return true;
 }
 
 bool Agent::subscribe(const char *topic) {
-  if (!_sub_connected)
+  if (!topic)
     return false;
+  _want_sub = true;
+
+  // Remember it first: the link may be down now, and every reconnect has to
+  // replay the full set (ZMTP subscriptions don't survive a new socket).
+  bool known = false;
+  for (size_t i = 0; i < _sub_topic_count; ++i)
+    if (strcmp(_sub_topics[i], topic) == 0)
+      known = true;
+  if (!known) {
+    if (_sub_topic_count >= MAX_SUB_TOPICS)
+      return false; // no room to remember it, so don't pretend it's durable
+    strncpy(_sub_topics[_sub_topic_count], topic, SUB_TOPIC_CAP - 1);
+    _sub_topics[_sub_topic_count][SUB_TOPIC_CAP - 1] = '\0';
+    ++_sub_topic_count;
+  }
+
+  if (!_sub_transport.connected())
+    return false; // stored; ensure_sub_link() will send it once up
   return ZmtpCodec::send_subscription(_sub_transport, topic, true);
 }
 
 bool Agent::publish(const char *json, size_t json_len, const char *topic) {
-  if (!_pub_transport.connected())
+  if (!ensure_pub_link())
     return false;
   const char *use_topic = topic ? topic : _pub_topic;
 
@@ -192,13 +299,22 @@ bool Agent::publish(const char *json, size_t json_len, const char *topic) {
   // 3-part header form is the only way to interoperate as plain JSON.
   uint8_t header[12] = {'M', 'A', 'D', 'S', 1, 0, 0, 0, 0, 0, 0, 0};
 
-  return ZmtpCodec::send_frame(_pub_transport,
-                               reinterpret_cast<const uint8_t *>(use_topic),
-                               strlen(use_topic), true) &&
-         ZmtpCodec::send_frame(_pub_transport, header, sizeof(header), true) &&
-         ZmtpCodec::send_frame(_pub_transport,
-                               reinterpret_cast<const uint8_t *>(json),
-                               json_len, false);
+  bool sent =
+      ZmtpCodec::send_frame(_pub_transport,
+                            reinterpret_cast<const uint8_t *>(use_topic),
+                            strlen(use_topic), true) &&
+      ZmtpCodec::send_frame(_pub_transport, header, sizeof(header), true) &&
+      ZmtpCodec::send_frame(_pub_transport,
+                            reinterpret_cast<const uint8_t *>(json),
+                            json_len, false);
+
+  if (!sent) {
+    // Drop the socket so the next call goes through the reconnect path
+    // rather than writing more frames into a half-dead connection (which
+    // would also desynchronise the peer's frame parser mid-message).
+    _pub_transport.close();
+  }
+  return sent;
 }
 
 bool Agent::publish(JsonDocument &payload, const char *topic) {
@@ -215,7 +331,20 @@ bool Agent::publish(JsonDocument &payload, const char *topic) {
 bool Agent::poll(char *topic_out, size_t topic_cap, uint8_t *payload_out,
                  size_t payload_cap, size_t &payload_len, uint32_t timeout_ms) {
   payload_len = 0;
-  if (!_sub_connected || !_sub_transport.available())
+  if (!_want_sub)
+    return false;
+
+  // Optional watchdog for a link that is still nominally connected but has
+  // gone quiet -- catches half-open connections TCP hasn't noticed. Off by
+  // default; see set_sub_silence_timeout() for why it isn't a good primary
+  // liveness signal.
+  if (_sub_silence_ms > 0 && _sub_transport.connected() &&
+      (millis() - _last_sub_rx) > _sub_silence_ms)
+    _sub_transport.close();
+
+  if (!ensure_sub_link())
+    return false;
+  if (!_sub_transport.available())
     return false;
 
   uint8_t flags;
@@ -266,6 +395,7 @@ bool Agent::poll(char *topic_out, size_t topic_cap, uint8_t *payload_out,
                                   timeout_ms))
     return false;
   payload_len = static_cast<size_t>(len);
+  _last_sub_rx = millis();
   return true;
 }
 

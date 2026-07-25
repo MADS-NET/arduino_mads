@@ -48,6 +48,13 @@ public:
   /// a trailing newline).
   void finish();
 
+  /// Clears all accumulated results so the same scanner can consume a fresh
+  /// settings reply (e.g. when re-fetching after a reconnect). Without this,
+  /// a second feed() run would append duplicate watched-section entries on
+  /// top of the first run's, and `done()` would already be true. The
+  /// watch_section() name is retained.
+  void reset();
+
   /// True once the three shared `[agents]` keys have been found. Does NOT
   /// reflect whether the watched section (if any) has been fully seen --
   /// callers that set watch_section() should keep feeding until the whole

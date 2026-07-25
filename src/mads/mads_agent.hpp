@@ -38,6 +38,19 @@ namespace Mads {
  * Usage shape: call begin() once from setup() (blocking, does the settings
  * REQ/REP exchange and opens the PUB connection); call publish() and,
  * if subscribed, poll() from loop() (poll() never blocks).
+ *
+ * Reconnection: both links self-heal. When a link is down, publish()/poll()
+ * retry it at most once per reconnect_interval() (default 1s), rejoining
+ * WiFi and re-fetching settings first if needed, and replaying SUB
+ * subscriptions on a fresh SUB socket. This also covers "broker wasn't up
+ * yet when the board booted": begin() may fail, but a loop() that keeps
+ * calling publish() will connect as soon as the broker appears.
+ *
+ * The retry itself is NOT asynchronous -- Arduino's Client API has no
+ * non-blocking connect, so a single attempt against an unreachable host
+ * blocks loop() for however long WiFiClient::connect() takes to give up.
+ * The per-interval rate limit bounds how often that happens, not how long
+ * one attempt lasts.
  */
 class Agent {
 public:
@@ -71,10 +84,17 @@ public:
              const char *pub_topic, uint32_t timeout_ms = 5000);
 
   /// Opens the SUB connection (this agent -> broker's XPUB/backend port).
-  /// Optional: only needed if this agent also receives messages.
+  /// Optional: only needed if this agent also receives messages. Marks this
+  /// agent as wanting a SUB link, so poll() will keep it alive from then on.
   bool connect_sub(uint32_t timeout_ms = 3000);
 
-  /// Registers interest in `topic`. Requires a prior successful connect_sub().
+  /**
+   * Registers interest in `topic`. The topic is remembered (up to
+   * MAX_SUB_TOPICS) and automatically re-sent whenever the SUB link is
+   * re-established -- ZMTP subscriptions live on the connection, so a
+   * reconnected socket starts with none. Safe to call before
+   * connect_sub(): the topic is stored and applied once the link opens.
+   */
   bool subscribe(const char *topic);
 
   /// Publishes `json_len` bytes of uncompressed JSON text under `topic`
@@ -107,9 +127,41 @@ public:
             size_t payload_cap, size_t &payload_len, uint32_t timeout_ms = 200);
 
   bool connected() { return _pub_transport.connected(); }
+  bool sub_connected() { return _sub_transport.connected(); }
+  /// True once a settings reply has been successfully parsed. Worth
+  /// checking from loop() when begin() failed (e.g. the broker wasn't up
+  /// yet at boot): the reconnect path re-runs the settings exchange, so
+  /// per-agent settings become available later without a restart.
+  bool settings_ok() const { return _settings_ok; }
   int timecode_fps() const { return _timecode_fps; }
   uint16_t frontend_port() const { return _frontend_port; }
   uint16_t backend_port() const { return _backend_port; }
+
+  /**
+   * Minimum delay between reconnect attempts for a down link (default
+   * 1000ms). publish()/poll() attempt at most one reconnect per interval,
+   * so a persistently unreachable broker doesn't turn loop() into a busy
+   * retry spin.
+   */
+  void set_reconnect_interval(uint32_t ms) { _reconnect_interval_ms = ms; }
+  uint32_t reconnect_interval() const { return _reconnect_interval_ms; }
+
+  /**
+   * Optional SUB liveness watchdog: if more than `ms` elapse with no
+   * message received on a SUB link that is still nominally connected,
+   * treat it as dead and reconnect. Default 0 (disabled).
+   *
+   * Disabled by default on purpose: a SUB socket is passive, so "no data"
+   * is indistinguishable from "subscribed topic is simply quiet", and a
+   * too-eager timer would tear down healthy links on low-rate topics. Real
+   * drops are already caught by the transport's connected() check, which
+   * costs nothing and never false-positives. Enable this only when you
+   * expect traffic at a known minimum rate (set `ms` to several times that
+   * period), to also catch half-open connections where TCP never notices
+   * the peer vanished.
+   */
+  void set_sub_silence_timeout(uint32_t ms) { _sub_silence_ms = ms; }
+  uint32_t sub_silence_timeout() const { return _sub_silence_ms; }
 
   /// The agent_id merged into published messages: the constructor-given
   /// value, or (once begin() has joined WiFi) the MAC-address fallback.
@@ -137,27 +189,56 @@ public:
     return _settings_scan.int_array(key, out, max);
   }
 
+public:
+  static constexpr size_t MAX_SUB_TOPICS = 4;
+
 private:
-  bool fetch_settings(const char *agent_name, uint16_t settings_port,
-                      uint32_t timeout_ms);
+  bool fetch_settings(uint32_t timeout_ms);
+  /// Joins WiFi if needed and waits for a DHCP-assigned IP, refreshing
+  /// _hostname (and _agent_id on first resolution). False on timeout.
+  bool ensure_wifi(uint32_t timeout_ms);
+  /// Brings the PUB link up if it is down, rate-limited to one attempt per
+  /// _reconnect_interval_ms. True if the link is usable on return.
+  bool ensure_pub_link();
+  /// Same for the SUB link; replays stored subscriptions on a fresh socket.
+  bool ensure_sub_link();
 
   WifiTransport _pub_transport;
   WifiTransport _sub_transport;
   const char *_broker_host = nullptr;
   const char *_pub_topic = nullptr;
+  // Retained so a reconnect can rejoin WiFi and re-run the settings
+  // exchange without the sketch having to hand them over again.
+  const char *_ssid = nullptr;
+  const char *_pass = nullptr;
+  const char *_agent_name = nullptr;
+  uint16_t _settings_port = 9092;
+  uint32_t _timeout_ms = 5000;
   uint16_t _frontend_port = 9090;
   uint16_t _backend_port = 9091;
   int _timecode_fps = 25;
-  bool _sub_connected = false;
+  bool _settings_ok = false;
+  bool _want_sub = false;
   TomlScan _settings_scan;
+
+  uint32_t _reconnect_interval_ms = 1000;
+  uint32_t _sub_silence_ms = 0;
+  uint32_t _last_pub_attempt = 0;
+  uint32_t _last_sub_attempt = 0;
+  uint32_t _last_sub_rx = 0;
+  bool _pub_attempted = false;
+  bool _sub_attempted = false;
 
   static constexpr size_t AGENT_ID_CAP = 32;  // fits "AA:BB:CC:DD:EE:FF" + room for a custom id
   static constexpr size_t HOSTNAME_CAP = 16;  // "255.255.255.255\0"
   static constexpr size_t PUBLISH_BUF_CAP = 256;
+  static constexpr size_t SUB_TOPIC_CAP = 24;
   char _agent_id[AGENT_ID_CAP] = {0};
   bool _agent_id_explicit = false;
   char _hostname[HOSTNAME_CAP] = {0};
   char _publish_buf[PUBLISH_BUF_CAP] = {0};
+  char _sub_topics[MAX_SUB_TOPICS][SUB_TOPIC_CAP] = {};
+  size_t _sub_topic_count = 0;
 };
 
 } // namespace Mads
