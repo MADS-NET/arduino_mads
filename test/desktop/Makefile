@@ -74,8 +74,26 @@ ZMTP_SRCS := test_zmtp_null.cpp $(SRC_DIR)/mads_agent.cpp \
              $(STUB_DIR)/WiFiS3.cpp
 ZMTP_BIN  := $(BUILD)/test_zmtp_null
 
-$(ZMTP_BIN): $(ZMTP_SRCS)
-	$(CXX) $(CXXFLAGS) -I$(SRC_DIR)/.. $(ZMTP_SRCS) -o $@ $(LDFLAGS)
+# Under MADS_ENABLE_CURVE, zmtp_session.cpp's mechanism branch references
+# curve_handshake(), so the CURVE translation units have to be linked in too
+# -- otherwise the enabled build fails at link rather than at compile, which
+# is a confusing way to find out. Monocypher is C and needs its own step.
+ifdef MADS_ENABLE_CURVE
+ZMTP_EXTRA_SRCS := $(SRC_DIR)/curve.cpp $(SRC_DIR)/crypto/salsa20.cpp \
+                   $(SRC_DIR)/crypto/nacl_box.cpp $(SRC_DIR)/entropy_desktop.cpp
+ZMTP_EXTRA_OBJS := $(BUILD)/monocypher_unit_zmtp.o
+else
+ZMTP_EXTRA_SRCS :=
+ZMTP_EXTRA_OBJS :=
+endif
+
+$(ZMTP_BIN): $(ZMTP_SRCS) $(ZMTP_EXTRA_SRCS)
+ifdef MADS_ENABLE_CURVE
+	$(CC) -std=c99 -Wall -O0 -g $(SAN) -DMADS_ENABLE_CURVE \
+	  -c $(SRC_DIR)/crypto/monocypher_unit.c -o $(BUILD)/monocypher_unit_zmtp.o
+endif
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR)/.. -I$(SRC_DIR)/crypto \
+	  $(ZMTP_SRCS) $(ZMTP_EXTRA_SRCS) $(ZMTP_EXTRA_OBJS) -o $@ $(LDFLAGS)
 
 # ---------------------------------------------------------------------------
 # test_crypto_vectors -- Phase 2, guarded: only built when the crypto/
@@ -130,11 +148,35 @@ $(ENTROPY_DETERM_BIN): test_entropy.cpp $(SRC_DIR)/entropy_desktop.cpp $(SRC_DIR
 endif
 
 # ---------------------------------------------------------------------------
+# test_curve_handshake -- Phase 4, live against a `mads broker --crypto`.
+# Always built with MADS_ENABLE_CURVE (there is nothing to test otherwise),
+# and skips cleanly at runtime unless MADS_BROKER_HOST and
+# MADS_CURVE_KEYS_DIR are both set.
+# ---------------------------------------------------------------------------
+CURVE_HS_TEST_SRC := test_curve_handshake.cpp
+CURVE_HS_BIN := $(BUILD)/test_curve_handshake
+HAVE_CURVE_HS_TEST := $(wildcard $(CURVE_HS_TEST_SRC))
+
+ifneq ($(HAVE_CURVE_HS_TEST),)
+CURVE_HS_SRCS := $(CURVE_HS_TEST_SRC) $(SRC_DIR)/curve.cpp \
+                 $(SRC_DIR)/zmtp_session.cpp $(SRC_DIR)/entropy_desktop.cpp \
+                 $(SRC_DIR)/crypto/salsa20.cpp $(SRC_DIR)/crypto/nacl_box.cpp \
+                 $(STUB_DIR)/WiFiS3.cpp
+
+$(CURVE_HS_BIN): $(CURVE_HS_SRCS) $(SRC_DIR)/crypto/monocypher_unit.c
+	$(CC) -std=c99 -Wall -O0 -g $(SAN) -DMADS_ENABLE_CURVE \
+	  -c $(SRC_DIR)/crypto/monocypher_unit.c -o $(BUILD)/monocypher_unit_hs.o
+	$(CXX) $(CXXFLAGS) -DMADS_ENABLE_CURVE -I$(SRC_DIR)/.. \
+	  -I$(SRC_DIR)/crypto $(CURVE_HS_SRCS) $(BUILD)/monocypher_unit_hs.o \
+	  -o $@ $(LDFLAGS)
+endif
+
+# ---------------------------------------------------------------------------
 # Top-level targets
 # ---------------------------------------------------------------------------
 .PHONY: all test clean stackreport stackreport-arm
 
-all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN))
+all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN)) $(if $(HAVE_CURVE_HS_TEST),$(CURVE_HS_BIN))
 
 test: all
 	@echo "--- test_toml_scan ---"
@@ -144,6 +186,10 @@ test: all
 ifneq ($(HAVE_CRYPTO_TEST),)
 	@echo "--- test_crypto_vectors ---"
 	$(CRYPTO_BIN)
+endif
+ifneq ($(HAVE_CURVE_HS_TEST),)
+	@echo "--- test_curve_handshake ---"
+	$(CURVE_HS_BIN)
 endif
 ifneq ($(HAVE_ENTROPY_TEST),)
 	@echo "--- test_entropy (desktop backend smoke test) ---"
@@ -223,7 +269,7 @@ stackreport-arm:
 	  exit 1; \
 	fi
 	@mkdir -p $(STACKREPORT_ARM_BUILD)
-	@for f in $(wildcard $(SRC_DIR)/crypto/*.cpp); do \
+	@for f in $(wildcard $(SRC_DIR)/crypto/*.cpp) $(wildcard $(SRC_DIR)/curve.cpp); do \
 	  base=$$(basename $$f .cpp); \
 	  $(ARM_PREFIX)g++ -std=gnu++17 -fno-rtti -fno-exceptions $(ARM_MCU) \
 	    $(ARM_COMMON) -I$(SRC_DIR)/crypto -I$(SRC_DIR) \

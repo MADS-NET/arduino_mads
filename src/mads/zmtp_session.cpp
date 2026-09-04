@@ -3,54 +3,8 @@
 
 namespace Mads {
 
-bool ZmtpSession::send_greeting() {
-  uint8_t greeting[64] = {0};
-  greeting[0] = 0xFF;             // signature start
-  // bytes 1-8: signature padding, zero is a valid "not significant" value
-  greeting[9] = 0x7F;              // signature end (marks a "versioned peer")
-  greeting[10] = 3;                // revision (major) = 3
-  greeting[11] = 0;                // minor = 0 -- see class doc: pins the
-                                    // peer's per-connection encoder to the
-                                    // legacy single-byte-prefixed subscribe
-                                    // encoding and avoids heartbeating.
-  greeting[12] = 'N';
-  greeting[13] = 'U';
-  greeting[14] = 'L';
-  greeting[15] = 'L';
-  // bytes 16-31: mechanism padding, zero
-  greeting[32] = 0;                 // as-server = false
-  // bytes 33-63: filler, zero
-  return _t.write(greeting, sizeof(greeting));
-}
-
-bool ZmtpSession::recv_greeting(uint32_t timeout_ms) {
-  uint8_t greeting[64];
-  if (_t.read(greeting, sizeof(greeting), timeout_ms) != sizeof(greeting))
-    return false;
-  if (greeting[0] != 0xFF || greeting[9] != 0x7F)
-    return false;
-  if (greeting[10] != 3)
-    return false; // require ZMTP major revision 3
-  if (greeting[12] != 'N' || greeting[13] != 'U' || greeting[14] != 'L' ||
-      greeting[15] != 'L')
-    return false; // peer requires CURVE/PLAIN, unsupported here
-  return true;
-}
-
 bool ZmtpSession::write_frame_header(uint64_t len, uint8_t flags) {
-  uint8_t header[9];
-  size_t hlen;
-  if (len > 255) {
-    header[0] = static_cast<uint8_t>(flags | FLAG_LARGE);
-    for (int i = 0; i < 8; ++i)
-      header[1 + i] = static_cast<uint8_t>((len >> (8 * (7 - i))) & 0xFF);
-    hlen = 9;
-  } else {
-    header[0] = flags;
-    header[1] = static_cast<uint8_t>(len);
-    hlen = 2;
-  }
-  return _t.write(header, hlen);
+  return zmtp_write_raw_header(_t, len, flags);
 }
 
 bool ZmtpSession::send_frame_raw(const uint8_t *data, size_t len,
@@ -73,25 +27,9 @@ bool ZmtpSession::send_frame(const char *text, bool more) {
 
 bool ZmtpSession::recv_frame_header(uint8_t &flags, uint64_t &len,
                                      uint32_t timeout_ms) {
-  uint8_t b;
-  if (_t.read(&b, 1, timeout_ms) != 1)
-    return false;
-  flags = b;
-  if (flags & FLAG_LARGE) {
-    uint8_t lb[8];
-    if (_t.read(lb, 8, timeout_ms) != 8)
-      return false;
-    uint64_t l = 0;
-    for (int i = 0; i < 8; ++i)
-      l = (l << 8) | lb[i];
-    len = l;
-  } else {
-    uint8_t lb;
-    if (_t.read(&lb, 1, timeout_ms) != 1)
-      return false;
-    len = lb;
-  }
-  return true;
+  // Phase 5 gives this a CURVE branch that consumes the MESSAGE prologue and
+  // reports the plaintext length; today both mechanisms read the raw header.
+  return zmtp_read_raw_header(_t, flags, len, timeout_ms);
 }
 
 bool ZmtpSession::recv_frame_body(uint8_t *buf, size_t buf_cap, uint64_t len,
@@ -126,19 +64,12 @@ bool ZmtpSession::send_ready(const char *socket_type) {
   body[pos++] = 'D';
   body[pos++] = 'Y';
 
-  const char name[] = "Socket-Type";
-  uint8_t name_len = static_cast<uint8_t>(sizeof(name) - 1);
-  body[pos++] = name_len;
-  memcpy(body + pos, name, name_len);
-  pos += name_len;
-
-  uint32_t value_len = static_cast<uint32_t>(strlen(socket_type));
-  body[pos++] = static_cast<uint8_t>((value_len >> 24) & 0xFF);
-  body[pos++] = static_cast<uint8_t>((value_len >> 16) & 0xFF);
-  body[pos++] = static_cast<uint8_t>((value_len >> 8) & 0xFF);
-  body[pos++] = static_cast<uint8_t>(value_len & 0xFF);
-  memcpy(body + pos, socket_type, value_len);
-  pos += value_len;
+  // Identical property bytes to CURVE's INITIATE metadata -- one builder.
+  const size_t md = zmtp_build_metadata(body + pos, sizeof(body) - pos,
+                                        socket_type);
+  if (md == 0)
+    return false;
+  pos += md;
 
   return send_frame_raw(body, pos, FLAG_COMMAND);
 }
@@ -168,9 +99,27 @@ bool ZmtpSession::recv_ready(uint32_t timeout_ms) {
 }
 
 bool ZmtpSession::handshake(const char *socket_type, uint32_t timeout_ms) {
-  if (!send_greeting())
+#ifdef MADS_ENABLE_CURVE
+  // The one mechanism branch in the library (CURVE_PLAN.md Sec 2). The
+  // greeting is shared: only its mechanism field differs, and `minor = 0`
+  // has to stay identical for both, so it is not duplicated into curve.cpp.
+  if (_curve_keys) {
+    if (!send_greeting("CURVE")) {
+      curve_note_error(CurveError::greeting);
+      return false;
+    }
+    if (!recv_greeting("CURVE", timeout_ms)) {
+      // Almost always a broker that is not running --crypto at all: it
+      // offers NULL, we require CURVE, and the mechanism compare fails.
+      curve_note_error(CurveError::greeting);
+      return false;
+    }
+    return curve_handshake(_t, *_curve_keys, socket_type, timeout_ms, _curve);
+  }
+#endif
+  if (!send_greeting("NULL"))
     return false;
-  if (!recv_greeting(timeout_ms))
+  if (!recv_greeting("NULL", timeout_ms))
     return false;
   if (!send_ready(socket_type))
     return false;

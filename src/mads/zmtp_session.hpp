@@ -3,7 +3,44 @@
 #include <cstddef>
 #include <cstdint>
 
+#ifdef MADS_ENABLE_CURVE
+#include "curve.hpp"
+#endif
+
 namespace Mads {
+
+/**
+ * ZMTP frame-header and metadata primitives, as free functions rather than
+ * ZmtpSession members.
+ *
+ * The CURVE handshake (curve.cpp) is a separate translation unit that works
+ * directly on a `Transport &` -- it runs before any session state exists to
+ * speak through. It needs exactly these three pieces, and duplicating them
+ * there would mean two copies of the small/large length encoding and two
+ * copies of the Socket-Type property layout, each free to drift. So they
+ * live here once and both callers use them.
+ *
+ * These are the *raw* header primitives: no CURVE MESSAGE prologue, no
+ * decryption. ZmtpSession::recv_frame_header() is the logical counterpart
+ * that (once Phase 5 lands) hides the 33-byte expansion from callers.
+ *
+ * They are `inline`, and that is load-bearing rather than stylistic. As
+ * ordinary out-of-line functions with external linkage they were emitted as
+ * real symbols and called through even when CURVE was compiled out, which
+ * cost 88-96 bytes of flash in the disabled build and broke Sec 7.3's
+ * "identical to Phase 1, exactly" rule. Inline, the disabled build folds
+ * them back into their single call sites and emits nothing extra.
+ */
+inline bool zmtp_write_raw_header(Transport &t, uint64_t len, uint8_t flags);
+inline bool zmtp_read_raw_header(Transport &t, uint8_t &flags, uint64_t &len,
+                                 uint32_t timeout_ms);
+
+/// Writes the ZMTP metadata property block -- the single `Socket-Type`
+/// property -- and returns its length, or 0 if it would not fit in `cap`.
+/// Shared by NULL's READY body and CURVE's INITIATE plaintext, which carry
+/// byte-identical metadata.
+inline size_t zmtp_build_metadata(uint8_t *out, size_t cap,
+                                  const char *socket_type);
 
 /**
  * Owns one connection's ZMTP protocol state -- handshake, frame
@@ -55,9 +92,10 @@ public:
   /// mads_agent.cpp, which is most of what stood between this refactor and
   /// the Phase 1 neutrality budget. Header-inline lets the compiler see
   /// through it at each call site instead.
-  /// (A CurveState member and its zeroisation are added here in Phase 4/5,
-  /// out of this pass's scope -- not present yet.)
-  void reset() {}
+  /// Under CURVE this wipes the CurveState, which is the whole point of the
+  /// rule: a reconnect that kept the old precom key and restarted the nonce
+  /// counter would reuse a (key, nonce) pair.
+  void reset() { wipe_mechanism(); }
 
   /**
    * Performs the ZMTP handshake over an already-connected transport: sends
@@ -125,13 +163,89 @@ public:
   bool end_recv_body() { return true; }
 
 private:
-  bool send_greeting();
-  bool recv_greeting(uint32_t timeout_ms);
+  // The greeting's mechanism field: 20 zero-padded octets at offset 12.
+  // CURVE_PLAN.md Appendix A.1 tabulates it as 16 bytes, which is a slip in
+  // the plan rather than a difference on the wire -- bytes 28-31 are zero
+  // under either reading, and `as-server` is at 32 in both, so the emitted
+  // and accepted bytes are identical. 20 is what ZMTP 3.0 and libzmq say.
+  static constexpr size_t MECHANISM_OFF = 12;
+  static constexpr size_t MECHANISM_LEN = 20;
+
+  // The mechanism name is the only part of the greeting that differs
+  // between NULL and CURVE; `minor` stays 0 for both, and is load-bearing
+  // for CURVE (see the class comment above).
+  //
+  // Defined inline for the same footprint reason as reset() and the
+  // streaming trio: each has exactly one call site, and out of line the
+  // mechanism stays an opaque runtime pointer, so strlen/memcpy against a
+  // string literal cannot fold. That cost ~40 bytes of flash in the
+  // *disabled* build, which Sec 7.3 does not allow. Inlined, "NULL" folds
+  // to the same constant stores Phase 1 emitted.
+  bool send_greeting(const char *mechanism) {
+    uint8_t greeting[64] = {0};
+    greeting[0] = 0xFF;  // signature start
+    // bytes 1-8: signature padding, zero is a valid "not significant" value
+    greeting[9] = 0x7F;  // signature end (marks a "versioned peer")
+    greeting[10] = 3;    // revision (major) = 3
+    greeting[11] = 0;    // minor = 0 -- see class doc: pins the peer's
+                         // per-connection encoder to the legacy
+                         // single-byte-prefixed subscribe encoding and
+                         // avoids heartbeating.
+    const size_t mlen = __builtin_strlen(mechanism);
+    if (mlen > MECHANISM_LEN)
+      return false;
+    __builtin_memcpy(greeting + MECHANISM_OFF, mechanism, mlen);
+    // remainder of the mechanism field stays zero-padded
+    greeting[32] = 0;    // as-server = false
+    // bytes 33-63: filler, zero
+    return _t.write(greeting, sizeof(greeting));
+  }
+
+  bool recv_greeting(const char *mechanism, uint32_t timeout_ms) {
+    uint8_t greeting[64];
+    if (_t.read(greeting, sizeof(greeting), timeout_ms) != sizeof(greeting))
+      return false;
+    if (greeting[0] != 0xFF || greeting[9] != 0x7F)
+      return false;
+    if (greeting[10] != 3)
+      return false; // require ZMTP major revision 3
+    // Only the name bytes are compared, not the whole zero-padded field.
+    // libzmq compares all 20, which is stricter -- it rejects a peer
+    // advertising "NULLX" where this accepts it. Matching libzmq costs flash
+    // in the disabled build, which Sec 7.3 requires to stay byte-identical
+    // to Phase 1, so the stricter compare cannot be introduced without
+    // breaking a stated acceptance criterion. Recorded rather than silent;
+    // no known peer advertises a mechanism name with a matching prefix.
+    const size_t mlen = __builtin_strlen(mechanism);
+    if (mlen > MECHANISM_LEN)
+      return false;
+    if (__builtin_memcmp(greeting + MECHANISM_OFF, mechanism, mlen) != 0)
+      return false; // peer requires a different security mechanism
+    return true;
+  }
   bool send_ready(const char *socket_type);
   bool recv_ready(uint32_t timeout_ms);
 
   bool write_frame_header(uint64_t len, uint8_t flags);
   bool send_frame_raw(const uint8_t *data, size_t len, uint8_t flags);
+
+#ifdef MADS_ENABLE_CURVE
+public:
+  /// Arms this session for CURVE. `k` must outlive the session and stay
+  /// valid across reconnects (the Agent owns it). Passing nullptr, or never
+  /// calling this, leaves the session on the NULL mechanism.
+  void set_curve_keys(const CurveKeys *k) { _curve_keys = k; }
+  /// Read-only view of the armed state -- exists so a caller can assert
+  /// nonce_out == 3 after a fresh handshake (CURVE_PLAN.md Phase 8 step 5).
+  const CurveState &curve_state() const { return _curve; }
+
+private:
+  void wipe_mechanism() { _curve.wipe(); }
+  const CurveKeys *_curve_keys = nullptr;
+  CurveState _curve{};
+#else
+  void wipe_mechanism() {}
+#endif
 
   Transport &_t;
   // NULL-mechanism state: none. begin_recv_body/read_body_chunk/
@@ -142,5 +256,71 @@ private:
   // zmtp_session.cpp -- which is exactly why this trio exists as an API
   // instead of callers reading the transport directly.)
 };
+
+// ---------------------------------------------------------------------------
+// Inline definitions. After the class because they use ZmtpSession's flag
+// constants; see the declarations above for why they are inline at all.
+// ---------------------------------------------------------------------------
+inline bool zmtp_write_raw_header(Transport &t, uint64_t len, uint8_t flags) {
+  uint8_t header[9];
+  size_t hlen;
+  if (len > 255) {
+    header[0] = static_cast<uint8_t>(flags | ZmtpSession::FLAG_LARGE);
+    for (int i = 0; i < 8; ++i)
+      header[1 + i] = static_cast<uint8_t>((len >> (8 * (7 - i))) & 0xFF);
+    hlen = 9;
+  } else {
+    header[0] = flags;
+    header[1] = static_cast<uint8_t>(len);
+    hlen = 2;
+  }
+  return t.write(header, hlen);
+}
+
+inline bool zmtp_read_raw_header(Transport &t, uint8_t &flags, uint64_t &len,
+                                 uint32_t timeout_ms) {
+  uint8_t b;
+  if (t.read(&b, 1, timeout_ms) != 1)
+    return false;
+  flags = b;
+  if (flags & ZmtpSession::FLAG_LARGE) {
+    uint8_t lb[8];
+    if (t.read(lb, 8, timeout_ms) != 8)
+      return false;
+    uint64_t l = 0;
+    for (int i = 0; i < 8; ++i)
+      l = (l << 8) | lb[i];
+    len = l;
+  } else {
+    uint8_t lb;
+    if (t.read(&lb, 1, timeout_ms) != 1)
+      return false;
+    len = lb;
+  }
+  return true;
+}
+
+inline size_t zmtp_build_metadata(uint8_t *out, size_t cap,
+                                  const char *socket_type) {
+  const char name[] = "Socket-Type";
+  const uint8_t name_len = static_cast<uint8_t>(sizeof(name) - 1);
+  const uint32_t value_len = static_cast<uint32_t>(__builtin_strlen(socket_type));
+  const size_t total = 1u + name_len + 4u + value_len;
+  if (total > cap)
+    return 0;
+
+  size_t pos = 0;
+  out[pos++] = name_len;
+  __builtin_memcpy(out + pos, name, name_len);
+  pos += name_len;
+  // Property values are length-prefixed big-endian uint32.
+  out[pos++] = static_cast<uint8_t>((value_len >> 24) & 0xFF);
+  out[pos++] = static_cast<uint8_t>((value_len >> 16) & 0xFF);
+  out[pos++] = static_cast<uint8_t>((value_len >> 8) & 0xFF);
+  out[pos++] = static_cast<uint8_t>(value_len & 0xFF);
+  __builtin_memcpy(out + pos, socket_type, value_len);
+  pos += value_len;
+  return pos;
+}
 
 } // namespace Mads
