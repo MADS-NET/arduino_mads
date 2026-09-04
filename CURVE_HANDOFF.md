@@ -12,33 +12,63 @@ documentation.
 
 ## 1. Do not start with Phase 4
 
-Three acceptance criteria from Phases 0-3 are still open, and two of them are things only your
-machine can close. Closing them first is not bureaucracy -- one of them validates the entire
-Phase 1 refactor, which everything after it is built on.
+Two of the three acceptance criteria from Phases 0-3 are now **closed** (2026-09-04, on the
+repo owner's machine, against a live `mads broker` v2.4.3). The third needs a board and is still
+open. Phase 4 is unblocked as far as these go -- but read Sec 5's stack finding before building on
+plan Sec 7.2's budget.
 
-**1. `test_zmtp_null` has never run against a broker.** This is the single most important thing to
-do first. Phase 1 rewrote every ZMTP call site in `mads_agent.cpp` from `ZmtpCodec`'s static
-functions to `ZmtpSession`, including converting `fetch_settings()`'s ini-text frame to the
-streaming trio. It compiles, it passes ASan/UBSan, and **it has never exchanged a byte with a real
-broker.** If that refactor broke the NULL path, you would not find out until Phase 5's live tests,
-with three phases of crypto layered on top of the fault.
+**1. `test_zmtp_null` against a real broker -- CLOSED, and it did fail on first contact.** The
+failure was in the *test*, not in the Phase 1 refactor, which is a good outcome: the refactor is
+now verified on the wire, and the test that verifies it was itself wrong in two ways (fixed in
+commit `85bf650`).
+
+* It asserted `subscribe()` returns true when called *before* `connect_sub()`. It does not, by
+  design -- with no SUB link up the topic is only stored for replay and false means "remembered,
+  nothing sent on the wire". `subscribe()` is byte-identical on `main`; Phase 1 only swapped
+  `ZmtpCodec::send_subscription(_sub_transport, ...)` for `_sub_session.send_subscription(...)`.
+* It published once and then polled, racing ZMQ's slow joiner. The SUBSCRIBE has to propagate
+  through the broker's XPUB/XSUB relay before anything comes back, and a message published inside
+  that window is dropped, not queued. Measured propagation against a local broker is **8-9
+  publish/poll iterations, ~1.6-1.8 s** -- so the original single publish could never have
+  succeeded however long it polled.
+
+With those fixed the full suite passes under ASan+UBSan with no sanitizer reports:
+`test_toml_scan` 65/65, `test_zmtp_null` PASSED, `test_crypto_vectors` 448/448, `test_entropy` and
+`test_entropy_deterministic` PASSED. `mads echo --jsonl` decodes the published frames correctly
+(`topic=test_zmtp_null`, `type=json`, payload intact). What this exercises end to end: `begin()`
+including `fetch_settings()`'s converted streaming trio, `publish()`, both `subscribe()` call
+sites, `connect_sub()` and `poll()`.
 
 ```sh
 cd test/desktop
 MADS_BROKER_HOST=127.0.0.1 make test ARDUINOJSON_DIR=/path/to/ArduinoJson/src
 ```
 
-against a plain (non-`--crypto`) broker. Also run `mads echo --jsonl` on the same broker to confirm
-the published messages decode. Only then move on.
+One trap worth knowing, now noted in `test/desktop/README.md`: `mads echo`'s stdout is
+block-buffered when redirected to a file, so a run killed by a signal silently loses the buffer and
+is indistinguishable from a broker relaying nothing. Capture it under a pty
+(`script -q /dev/null mads echo --jsonl`).
 
 **2. `pub_sub` misses Phase 1's flash budget by 16 bytes** (+48 vs the ±32 criterion; RAM is fine
 at +8 everywhere, which is exactly the two `Transport &` references). Root-caused to the SUB-path
 call sites plus the mandatory `fetch_settings()` conversion; the fix considered and rejected was
 reordering `Agent`'s members so `_pub_session` reclaims the offset-0 codegen the embedded
 `_pub_transport` used to get -- fragile, and it silently regresses the next time a member is added.
-Re-measure with *your* toolchain versions before deciding whether to care. The numbers here came
-from arduino-cli 1.2.2 / `arduino:renesas_uno@1.6.0` / ArduinoJson 7.4.3, and a different core
-version may move them either way.
+**Re-measured 2026-09-04 on arduino-cli 1.0.2** (same core 1.6.0 / ArduinoJson 7.4.3), against a
+`main` worktree as the pre-Phase-1 baseline. Absolute flash sizes shift by ~40 bytes between the
+two arduino-cli versions, but **every delta is identical**: `+32 / +48 / +32` flash and `+8` RAM,
+exactly as measured in the container. The overshoot is therefore inherent to the refactor and not a
+compiler artifact -- there is nothing toolchain-specific left to hope for. Combined with Sec 9's
+decision that the 16 bytes are not worth chasing, **this criterion is closed.**
+
+| example | main (1.0.2) | Phase 3 (1.0.2) | delta | container delta |
+|---|---|---|---|---|
+| `minimal_pub` | 68944 / 8748 | 68976 / 8756 | +32 / +8 | +32 |
+| `pub_sub` | 70024 / 8908 | 70072 / 8916 | **+48** / +8 | +48 |
+| `uno_r4_sensor` | 70136 / 8832 | 70168 / 8840 | +32 / +8 | +32 |
+
+Because the current branch includes Phases 2 and 3, these deltas being unchanged from Phase 1's
+also re-confirms the **zero**-cost disabled build (plan Sec 7.3) on a second toolchain.
 
 **3. Board TRNG behaviour is unverified.** `entropy_ra4m1.cpp` *links* -- proven by compiling a
 throwaway sketch that actually calls `entropy_init()`/`entropy_fill()`, so `--gc-sections` could
@@ -46,6 +76,10 @@ not drop the file before the linker had to resolve `HW_SCE_McuSpecificInit` and
 `HW_SCE_GenerateRandomNumberSub`. That confirms `arduino:renesas_uno@1.6.0`'s `libfsp.a` exports
 them. It does **not** confirm the TRNG produces good bytes, which is Phase 8's gate. If you have a
 board, doing Phase 8 step 1 early is cheap and de-risks everything.
+
+**Still open as of 2026-09-04** -- the repo owner's machine has the broker but no board attached
+(`arduino-cli board list` shows no UNO R4), so this could not be closed here either. It remains the
+one criterion that needs hardware.
 
 ---
 
@@ -88,6 +122,13 @@ Everything below was true in the container this was built in, and is not true on
   Re-test on your setup; Phase 6 must not ship `build_opt.h` as the only enable path without it.
 * There is **no MADS broker** here and **no board**. Every "live" test is written, committed, and
   skips cleanly on a missing `MADS_BROKER_HOST`.
+
+**Confirmed working on the repo owner's machine 2026-09-04** (the numbers above having been
+reproduced there): macOS 15 arm64, Apple clang 21, arduino-cli **1.0.2**, core
+`arduino:renesas_uno@1.6.0`, ArduinoJson **7.4.3**, MADS **v2.4.3**, ArduinoJson at
+`~/Documents/Arduino/libraries/ArduinoJson/src`. The desktop harness builds warning-free under
+Apple clang as well as g++ 13.3, and `arm-none-eabi-gcc 7-2017q4` is available under
+`~/Library/Arduino15/packages/arduino/tools/` for the Sec 5 stack re-measurement.
 
 ---
 
@@ -255,6 +296,17 @@ Worth a decision before Phase 6, none blocking Phase 4:
   requirement for the recommended fix, which does not depend on hardware timing. What still needs
   Phase 8 step 3's per-mult number is only the secondary question of whether a *successful*
   reconnect's added latency is noticeable in `loop()`.
+* **New, surfaced by the first live run: is `subscribe()`'s return value the contract you want?**
+  It returns `false` for two unrelated situations -- "topic stored, link not up yet, nothing sent"
+  (a success per the header's documented "safe to call before `connect_sub()`") and "topic table
+  full, not remembered" (a real failure). A caller cannot tell them apart, and the natural
+  `if (!agent.subscribe(t)) { error }` is wrong against a link that simply is not up yet -- which
+  is exactly the mistake the committed test made. This is **pre-existing on `main`**, not something
+  Phase 1 introduced, and changing it is a public API change affecting existing sketches, so it was
+  left alone. Options: return true when the topic is durably stored (arguably what the docs already
+  promise), or split "stored" from "sent" into a small enum. Worth settling before Phase 6
+  documents the CURVE-era API, since CURVE makes "link not up yet" much more common.
+
 * ~~**On-board key generation**~~ -- **decided 2026-09-04: not doing it.** Keys are generated
   separately with `mads --keypair` and compiled in from `arduino_secrets.h`. Do not re-open this;
   build Phase 6 to it. Note it does not relax the Phase 8 TRNG gate at all -- the transient
