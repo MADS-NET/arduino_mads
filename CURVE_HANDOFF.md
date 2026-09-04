@@ -13,7 +13,39 @@ documentation.
 ## 1. Do not start with Phase 4
 
 **All three** acceptance criteria from Phases 0-3 are now **closed** (2026-09-04, on the repo
-owner's machine, against a live `mads broker` v2.4.3 and a real UNO R4 WiFi). Phase 4 is unblocked as far as these go -- but read Sec 5 before building on plan Sec 7.2's
+owner's machine, against a live `mads broker` v2.4.3 and a real UNO R4 WiFi), and **Phase 4 is
+done and verified on the wire** (2026-09-05).
+
+### Phase 4 status
+
+`src/mads/curve.{hpp,cpp}`, wired into `ZmtpSession` behind the single mechanism branch Sec 2 asks
+for. Verified against a real `mads broker --crypto` v2.4.3 run on ports 919x (so a plain broker
+could keep running alongside on 909x): the ZAP log shows **`granted` on all three socket types**,
+which is Phase 4's stated acceptance criterion, and `nonce_out == 3` on each.
+
+Golden HELLO/INITIATE vectors are recorded for all three socket types, against a scripted mock
+broker -- a live one cannot produce a stable INITIATE because it picks a fresh transient key and
+cookie per connection. The bytes were checked against Appendix A independently of the code that
+generated them.
+
+Numbers worth carrying forward:
+
+| quantity | value |
+|---|---|
+| `curve_handshake` own stack frame (ARM `-Os`) | **104 B** of the 512 B available above Monocypher |
+| deepest chain through it | 968 B (864 of that is `box_beforenm`) |
+| disabled build vs pre-refactor `main` | **+8 / +16 / +8** flash, +8 RAM |
+| crypto symbols in a disabled build | **0** |
+| Sec 2 guard budget | **9 of 12** |
+
+Two plan corrections came out of it, both already applied to CURVE_PLAN.md: Sec 4.2's expected
+error for a wrong broker key was unreachable (see below), and Sec 7.3's "exactly" is now
+over-satisfied in the smaller direction.
+
+**The `pub_sub` flash overshoot in criterion 2 below is now retired.** Inlining the greeting to
+keep CURVE's parameterisation free also reclaimed what Phase 1 was paying, taking `pub_sub` from
++48 to **+16** against `main` -- inside the +-32 criterion. The text below is left as the record of
+how it stood at Phase 3. Phase 4 is unblocked as far as these go -- but read Sec 5 before building on plan Sec 7.2's
 512-byte `curve_handshake` budget, which is measurably too small and needs re-basing first.
 
 **1. `test_zmtp_null` against a real broker -- CLOSED, and it did fail on first contact.** The
@@ -385,6 +417,14 @@ Worth a decision before Phase 6, none blocking Phase 4:
   worth keeping in mind if anyone proposes retrying a rejected handshake aggressively: the
   rejected case burns the same 180 ms and never succeeds, which is the whole argument for the
   Phase 6 backoff.
+* **New, from Phase 4: `recv_greeting()` compares only the mechanism *name*, not libzmq's full
+  20-byte zero-padded field.** So a peer advertising `NULLX` would be accepted where libzmq rejects
+  it. This is pre-existing behaviour, not something Phase 4 introduced -- but Phase 4 touched the
+  function and deliberately left it, because making it strict costs ~30 bytes of flash in the
+  *disabled* build and Sec 7.3 requires that build not to grow. There is no known peer that
+  advertises a mechanism name with a matching prefix, so this is a latent tidiness issue rather
+  than a live bug. If it should be fixed, it needs an explicit decision to spend those bytes.
+
 * **New, surfaced by the first live run: is `subscribe()`'s return value the contract you want?**
   It returns `false` for two unrelated situations -- "topic stored, link not up yet, nothing sent"
   (a success per the header's documented "safe to call before `connect_sub()`") and "topic table

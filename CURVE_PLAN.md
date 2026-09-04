@@ -460,8 +460,19 @@ the broker's keys dir, or the broker was not restarted after adding it". Say so 
   `mads broker --crypto`, and commit them. This is the regression net for every later change.
 * Live test against a real `mads broker --crypto` (skipped unless `MADS_BROKER_HOST` and key paths
   are set): full handshake on all three sockets.
-* Negative: wrong `broker_public` -> WELCOME open fails, `CurveError::mac`. Unknown client key ->
-  `CurveError::rejected`.
+* Negative: unknown client key -> `CurveError::rejected`.
+* Negative: wrong `broker_public`. **Corrected 2026-09-05 against a real broker.** This section
+  originally predicted `CurveError::mac`, "WELCOME open fails". That cannot happen: HELLO is sealed
+  with `beforenm(S, c')`, so a wrong `S` means the *broker* cannot open our HELLO and drops the
+  connection without replying -- confirmed, with no ZAP entry logged at all, because the connection
+  dies before authentication is reached. The client never receives a WELCOME to fail on. The
+  observable outcome is a hang-up one round trip earlier than assumed, reported as
+  `CurveError::disconnected` (a value added to Sec 4.1's list for exactly this: without it the case
+  reports `timeout` and is indistinguishable from a network fault, which is what Sec 4.1 exists to
+  prevent).
+* Negative: broker not running `--crypto` at all -> `CurveError::greeting`. It advertises NULL and
+  the mechanism compare fails. Worth testing because it is the other misconfiguration people
+  actually hit.
 
 **Acceptance.** Golden vectors stable. Against a real `--crypto` broker with
 `[broker] auth_verbose = true`, the ZAP log shows `granted` for all three connections.
@@ -709,6 +720,19 @@ RAM. Expected: **+10-13 KB flash, +~300 B RAM when enabled; 0/0 when disabled.**
 
 **Acceptance.** The disabled build's flash and RAM match the Phase 1 numbers **exactly**. Not
 "close" -- exactly. Any difference means crypto code leaked into the disabled path; find it.
+
+*Outcome at Phase 4, recorded rather than glossed.* RAM matches exactly. Flash does **not**: the
+disabled build came out **24-32 bytes smaller** than Phase 1. The cause is not crypto leaking but
+its opposite -- sharing the greeting and the metadata builder with CURVE required inlining them,
+and that inlining also removed cost Phase 1 was paying out of line. Two consequences worth keeping:
+
+* Measured against the pre-refactor `main` baseline the disabled build is now **+8 / +16 / +8**
+  flash and +8 RAM, where Phase 1 was +32 / +48 / +32. That retires the `pub_sub` overshoot
+  recorded in CURVE_HANDOFF.md Sec 1: it is now +16, inside the +-32 criterion.
+* A byte count is a proxy; the property this criterion actually wants is that no crypto reaches the
+  disabled path. Check that directly, and keep checking it: `arm-none-eabi-nm` on a disabled
+  `pub_sub` build must report **zero** symbols matching curve/monocypher/salsa/poly1305/x25519/
+  secretbox/entropy. It does.
 
 ---
 
