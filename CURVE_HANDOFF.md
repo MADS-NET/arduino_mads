@@ -12,9 +12,8 @@ documentation.
 
 ## 1. Do not start with Phase 4
 
-Two of the three acceptance criteria from Phases 0-3 are now **closed** (2026-09-04, on the
-repo owner's machine, against a live `mads broker` v2.4.3). The third needs a board and is still
-open. Phase 4 is unblocked as far as these go -- but read Sec 5 before building on plan Sec 7.2's
+**All three** acceptance criteria from Phases 0-3 are now **closed** (2026-09-04, on the repo
+owner's machine, against a live `mads broker` v2.4.3 and a real UNO R4 WiFi). Phase 4 is unblocked as far as these go -- but read Sec 5 before building on plan Sec 7.2's
 512-byte `curve_handshake` budget, which is measurably too small and needs re-basing first.
 
 **1. `test_zmtp_null` against a real broker -- CLOSED, and it did fail on first contact.** The
@@ -77,9 +76,27 @@ not drop the file before the linker had to resolve `HW_SCE_McuSpecificInit` and
 them. It does **not** confirm the TRNG produces good bytes, which is Phase 8's gate. If you have a
 board, doing Phase 8 step 1 early is cheap and de-risks everything.
 
-**Still open as of 2026-09-04** -- the repo owner's machine has the broker but no board attached
-(`arduino-cli board list` shows no UNO R4), so this could not be closed here either. It remains the
-one criterion that needs hardware.
+**CLOSED 2026-09-04 on a real UNO R4 WiFi.** `test/hardware/phase8_diag` (Phase 8 steps 1-3) was
+flashed and run; see `test/hardware/README.md` for how. `entropy_init()` returns OK, so the SCE
+TRNG initialises and passes its own health check on hardware, not just at the linker.
+
+Phase 8 step 1's three conditions, over 12 KB from three runs (two of them separate **cold boots**
+-- a DTR toggle does *not* reset this board, only a re-upload or a power cycle does):
+
+| condition | result |
+|---|---|
+| not constant | pass -- no all-zero or all-`0xFF` run |
+| no repeated 16-byte block | pass -- **768/768 distinct**, zero collisions, including across runs |
+| different across power cycles | pass -- two cold boots share **zero** 16-byte blocks and differ entirely |
+
+Supporting statistics on the combined 12 KB: Shannon entropy **7.982 bits/byte** (the finite-sample
+ideal for this many samples is ~7.985), bit balance **0.49849**, lag-1 serial correlation
+**+0.00218**. Byte chi-square is 303.4 on df=255, which sits around the 96th percentile -- a little
+high, unremarkable for one 12 KB sample, and worth re-checking if anyone ever collects more.
+
+Treat this as a bring-up gate that the TRNG **passed**, not as a statistical certification: 12 KB
+is far too little for that, and NIST SP 800-90B or dieharder over megabytes is what certification
+would mean. Nothing here suggests it would be needed.
 
 ---
 
@@ -224,10 +241,26 @@ are nevertheless true and need acting on:
    22.5 KB. That is a property of the whole sketch, not of `curve_handshake`, so it cannot be
    settled statically.
 
-Phase 8 should therefore measure the actual high-water mark on the board -- paint the free region
-with a known pattern at boot, run a few handshakes, and look for where the pattern is still intact
--- rather than trusting any static sum, this one included. That measurement is also the only thing
-that can confirm the heap side of the margin.
+**Measured on the board 2026-09-04, and it confirms the reading above.** `phase8_diag` paints the
+free gap, runs 16 `box_beforenm()` calls, and reports where the paint survived:
+
+| quantity | measured |
+|---|---|
+| free gap, heap break -> `__StackTop` | **20436 B** |
+| reserved stack, `__StackTop` - `__StackLimit` | 1024 B |
+| stack high-water below `__StackTop` | **1612-1668 B** |
+| ... of which beyond the 1024 B reservation | **588-644 B** |
+
+So the stack really does cross `__StackLimit` in normal operation, silently and without
+consequence, which is exactly what "floor, not ceiling" predicts -- and it settles the question
+empirically rather than by reading the linker script. Peak usage is about **8%** of the available
+gap. The static 864 B for `box_beforenm` plus the diagnostic's own frames (the key buffers, the
+loop, and `main`/`loop` underneath) accounts for the 1612 well enough to trust both numbers.
+
+The remaining risk is unchanged and still cannot be settled statically: this was measured with a
+sketch that barely touches the heap, whereas a real agent allocates a `JsonDocument` per publish.
+Re-run this measurement in Phase 8 with the actual agent running, when there is a handshake to
+measure.
 
 Raising `BSP_CFG_STACK_MAIN_BYTES` is *not* the fix and was wrongly listed as an option here
 earlier: it lives in the core's variant files (so a library cannot set it), and since the limit is
@@ -327,9 +360,17 @@ Worth a decision before Phase 6, none blocking Phase 4:
   deterministic, never self-heals without human action, and under the current logic burns four
   scalar multiplications every interval forever.
   The interval default is therefore the wrong lever. See CURVE_PLAN.md Phase 6's backoff
-  requirement for the recommended fix, which does not depend on hardware timing. What still needs
-  Phase 8 step 3's per-mult number is only the secondary question of whether a *successful*
-  reconnect's added latency is noticeable in `loop()`.
+  requirement for the recommended fix, which does not depend on hardware timing.
+
+  **The per-mult number is now measured: one `box_beforenm()` (a single X25519 plus HSalsa20)
+  takes 45.4 ms on the board.** At the four scalar multiplications a CURVE handshake needs, that
+  is roughly **180 ms of blocking compute per handshake attempt**, on top of the TCP connect. So
+  the secondary question answers itself: a successful reconnect stalls `loop()` for about a fifth
+  of a second, which is very visible for an agent sampling at 100 ms (`[uno_r4] delay = 100` in
+  `mads.ini`) -- it will drop roughly two samples per reconnect. Worth documenting in Phase 9, and
+  worth keeping in mind if anyone proposes retrying a rejected handshake aggressively: the
+  rejected case burns the same 180 ms and never succeeds, which is the whole argument for the
+  Phase 6 backoff.
 * **New, surfaced by the first live run: is `subscribe()`'s return value the contract you want?**
   It returns `false` for two unrelated situations -- "topic stored, link not up yet, nothing sent"
   (a success per the header's documented "safe to call before `connect_sub()`") and "topic table
