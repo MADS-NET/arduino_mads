@@ -1,5 +1,4 @@
 #include "mads_agent.hpp"
-#include "zmtp_codec.hpp"
 #include <WiFiS3.h>
 #include <cstring>
 
@@ -31,7 +30,8 @@ bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
 
   if (!_pub_transport.connect(_broker_host, _frontend_port))
     return false;
-  if (!ZmtpCodec::handshake_null(_pub_transport, "PUB", timeout_ms)) {
+  _pub_session.reset();
+  if (!_pub_session.handshake("PUB", timeout_ms)) {
     _pub_transport.close();
     return false;
   }
@@ -99,7 +99,8 @@ bool Agent::ensure_pub_link() {
     return false;
   if (!_pub_transport.connect(_broker_host, _frontend_port))
     return false;
-  if (!ZmtpCodec::handshake_null(_pub_transport, "PUB", _timeout_ms)) {
+  _pub_session.reset();
+  if (!_pub_session.handshake("PUB", _timeout_ms)) {
     _pub_transport.close();
     return false;
   }
@@ -125,7 +126,8 @@ bool Agent::ensure_sub_link() {
     return false;
   if (!_sub_transport.connect(_broker_host, _backend_port))
     return false;
-  if (!ZmtpCodec::handshake_null(_sub_transport, "SUB", _timeout_ms)) {
+  _sub_session.reset();
+  if (!_sub_session.handshake("SUB", _timeout_ms)) {
     _sub_transport.close();
     return false;
   }
@@ -133,7 +135,7 @@ bool Agent::ensure_sub_link() {
   // ZMTP subscriptions are per-connection state: a fresh socket has none,
   // so every remembered topic must be re-sent or this link would go silent.
   for (size_t i = 0; i < _sub_topic_count; ++i) {
-    if (!ZmtpCodec::send_subscription(_sub_transport, _sub_topics[i], true)) {
+    if (!_sub_session.send_subscription(_sub_topics[i], true)) {
       _sub_transport.close();
       return false;
     }
@@ -152,7 +154,9 @@ bool Agent::fetch_settings(uint32_t timeout_ms) {
   WifiTransport settings_transport;
   if (!settings_transport.connect(_broker_host, _settings_port))
     return false;
-  if (!ZmtpCodec::handshake_null(settings_transport, "REQ", timeout_ms)) {
+  ZmtpSession session(settings_transport);
+  session.reset();
+  if (!session.handshake("REQ", timeout_ms)) {
     settings_transport.close();
     return false;
   }
@@ -161,10 +165,10 @@ bool Agent::fetch_settings(uint32_t timeout_ms) {
   // invisible at the zmqpp/desktop-Agent level but required at this raw
   // ZMTP layer -- see req.cpp's xsend() in the vendored libzmq source.
   bool sent =
-      ZmtpCodec::send_frame(settings_transport, "", true) &&
-      ZmtpCodec::send_frame(settings_transport, MADS_LIB_VERSION, true) &&
-      ZmtpCodec::send_frame(settings_transport, "settings", true) &&
-      ZmtpCodec::send_frame(settings_transport, agent_name, false);
+      session.send_frame("", true) &&
+      session.send_frame(MADS_LIB_VERSION, true) &&
+      session.send_frame("settings", true) &&
+      session.send_frame(agent_name, false);
   if (!sent) {
     settings_transport.close();
     return false;
@@ -175,18 +179,18 @@ bool Agent::fetch_settings(uint32_t timeout_ms) {
   uint64_t len;
 
   // Frame 0: empty delimiter.
-  if (!ZmtpCodec::recv_frame_header(settings_transport, flags, len, timeout_ms) ||
-      !ZmtpCodec::skip_frame_body(settings_transport, len, timeout_ms) ||
-      !(flags & ZmtpCodec::FLAG_MORE)) {
+  if (!session.recv_frame_header(flags, len, timeout_ms) ||
+      !session.skip_frame_body(len, timeout_ms) ||
+      !(flags & ZmtpSession::FLAG_MORE)) {
     settings_transport.close();
     return false;
   }
 
   // Frame 1: broker version string (not checked -- the broker itself is
   // the version authority; nothing to gain from validating it here).
-  if (!ZmtpCodec::recv_frame_header(settings_transport, flags, len, timeout_ms) ||
-      !ZmtpCodec::skip_frame_body(settings_transport, len, timeout_ms) ||
-      !(flags & ZmtpCodec::FLAG_MORE)) {
+  if (!session.recv_frame_header(flags, len, timeout_ms) ||
+      !session.skip_frame_body(len, timeout_ms) ||
+      !(flags & ZmtpSession::FLAG_MORE)) {
     settings_transport.close();
     return false;
   }
@@ -197,18 +201,30 @@ bool Agent::fetch_settings(uint32_t timeout_ms) {
   // the agent's own section means the whole frame must be consumed (no
   // early exit once the shared [agents] keys are found), since that
   // section's position in the file isn't known in advance.
-  if (!ZmtpCodec::recv_frame_header(settings_transport, flags, len, timeout_ms)) {
+  //
+  // Streamed through the begin_recv_body/read_body_chunk/end_recv_body
+  // trio rather than a raw transport.read() loop: under CURVE (not enabled
+  // here) the plaintext is delivered before it is authenticated, so a
+  // false from end_recv_body() means the whole chunk stream must be
+  // discarded -- which is why _settings_scan.reset() runs on that path
+  // below, even though under NULL end_recv_body() always returns true and
+  // this is a no-op today.
+  if (!session.recv_frame_header(flags, len, timeout_ms)) {
     settings_transport.close();
     return false;
   }
   _settings_scan.watch_section(agent_name);
   {
+    if (!session.begin_recv_body(len)) {
+      settings_transport.close();
+      return false;
+    }
     uint64_t remaining = len;
     uint8_t chunk[32];
     while (remaining > 0) {
       size_t want =
           remaining > sizeof(chunk) ? sizeof(chunk) : static_cast<size_t>(remaining);
-      int n = settings_transport.read(chunk, want, timeout_ms);
+      int n = session.read_body_chunk(chunk, want, timeout_ms);
       if (n <= 0) {
         settings_transport.close();
         return false;
@@ -216,15 +232,20 @@ bool Agent::fetch_settings(uint32_t timeout_ms) {
       _settings_scan.feed(chunk, static_cast<size_t>(n));
       remaining -= static_cast<uint64_t>(n);
     }
+    if (!session.end_recv_body()) {
+      _settings_scan.reset();
+      settings_transport.close();
+      return false;
+    }
     _settings_scan.finish();
   }
 
   // Any further frame (a broker-side attachment) is drained and discarded --
   // this library has no use for it.
-  while (flags & ZmtpCodec::FLAG_MORE) {
-    if (!ZmtpCodec::recv_frame_header(settings_transport, flags, len, timeout_ms))
+  while (flags & ZmtpSession::FLAG_MORE) {
+    if (!session.recv_frame_header(flags, len, timeout_ms))
       break;
-    if (!ZmtpCodec::skip_frame_body(settings_transport, len, timeout_ms))
+    if (!session.skip_frame_body(len, timeout_ms))
       break;
   }
 
@@ -248,12 +269,13 @@ bool Agent::connect_sub(uint32_t timeout_ms) {
     return false;
   if (!_sub_transport.connect(_broker_host, _backend_port))
     return false;
-  if (!ZmtpCodec::handshake_null(_sub_transport, "SUB", timeout_ms)) {
+  _sub_session.reset();
+  if (!_sub_session.handshake("SUB", timeout_ms)) {
     _sub_transport.close();
     return false;
   }
   for (size_t i = 0; i < _sub_topic_count; ++i) {
-    if (!ZmtpCodec::send_subscription(_sub_transport, _sub_topics[i], true)) {
+    if (!_sub_session.send_subscription(_sub_topics[i], true)) {
       _sub_transport.close();
       return false;
     }
@@ -283,7 +305,7 @@ bool Agent::subscribe(const char *topic) {
 
   if (!_sub_transport.connected())
     return false; // stored; ensure_sub_link() will send it once up
-  return ZmtpCodec::send_subscription(_sub_transport, topic, true);
+  return _sub_session.send_subscription(topic, true);
 }
 
 bool Agent::publish(const char *json, size_t json_len, const char *topic) {
@@ -300,13 +322,11 @@ bool Agent::publish(const char *json, size_t json_len, const char *topic) {
   uint8_t header[12] = {'M', 'A', 'D', 'S', 1, 0, 0, 0, 0, 0, 0, 0};
 
   bool sent =
-      ZmtpCodec::send_frame(_pub_transport,
-                            reinterpret_cast<const uint8_t *>(use_topic),
-                            strlen(use_topic), true) &&
-      ZmtpCodec::send_frame(_pub_transport, header, sizeof(header), true) &&
-      ZmtpCodec::send_frame(_pub_transport,
-                            reinterpret_cast<const uint8_t *>(json),
-                            json_len, false);
+      _pub_session.send_frame(reinterpret_cast<const uint8_t *>(use_topic),
+                              strlen(use_topic), true) &&
+      _pub_session.send_frame(header, sizeof(header), true) &&
+      _pub_session.send_frame(reinterpret_cast<const uint8_t *>(json),
+                              json_len, false);
 
   if (!sent) {
     // Drop the socket so the next call goes through the reconnect path
@@ -354,13 +374,11 @@ bool Agent::publish(const uint8_t *blob, size_t blob_len, JsonDocument &meta,
   // what the desktop Agent emits for a blob under the JSON wire format, and
   // deliberately header-less: see the overload's doc comment in the header.
   bool sent =
-      ZmtpCodec::send_frame(_pub_transport,
-                            reinterpret_cast<const uint8_t *>(use_topic),
-                            strlen(use_topic), true) &&
-      ZmtpCodec::send_frame(_pub_transport,
-                            reinterpret_cast<const uint8_t *>(_publish_buf),
-                            meta_len, true) &&
-      ZmtpCodec::send_frame(_pub_transport, blob, blob_len, false);
+      _pub_session.send_frame(reinterpret_cast<const uint8_t *>(use_topic),
+                              strlen(use_topic), true) &&
+      _pub_session.send_frame(reinterpret_cast<const uint8_t *>(_publish_buf),
+                              meta_len, true) &&
+      _pub_session.send_frame(blob, blob_len, false);
 
   if (!sent)
     _pub_transport.close(); // same half-sent-message reasoning as above
@@ -401,27 +419,26 @@ bool Agent::poll(char *topic_out, size_t topic_cap, uint8_t *payload_out,
   uint64_t len;
 
   // Frame 0: topic.
-  if (!ZmtpCodec::recv_frame_header(_sub_transport, flags, len, timeout_ms))
+  if (!_sub_session.recv_frame_header(flags, len, timeout_ms))
     return false;
   if (len >= topic_cap) {
-    ZmtpCodec::skip_frame_body(_sub_transport, len, timeout_ms);
+    _sub_session.skip_frame_body(len, timeout_ms);
     return false;
   }
-  if (!ZmtpCodec::recv_frame_body(_sub_transport,
-                                  reinterpret_cast<uint8_t *>(topic_out),
-                                  topic_cap, len, timeout_ms))
+  if (!_sub_session.recv_frame_body(reinterpret_cast<uint8_t *>(topic_out),
+                                    topic_cap, len, timeout_ms))
     return false;
   topic_out[len] = '\0';
-  if (!(flags & ZmtpCodec::FLAG_MORE))
+  if (!(flags & ZmtpSession::FLAG_MORE))
     return false; // malformed: expected header+payload frames to follow
 
   // Frame 1: the 12-byte MADS header.
-  if (!ZmtpCodec::recv_frame_header(_sub_transport, flags, len, timeout_ms))
+  if (!_sub_session.recv_frame_header(flags, len, timeout_ms))
     return false;
   uint8_t header[12];
   if (len != sizeof(header) ||
-      !ZmtpCodec::recv_frame_body(_sub_transport, header, sizeof(header), len,
-                                  timeout_ms)) {
+      !_sub_session.recv_frame_body(header, sizeof(header), len,
+                                    timeout_ms)) {
     // Not our 3-part header form (e.g. legacy 2-part snappy, or a peer
     // publishing MsgPack) -- unsupported by this minimal client, drop it.
     return false;
@@ -431,18 +448,18 @@ bool Agent::poll(char *topic_out, size_t topic_cap, uint8_t *payload_out,
     return false;
   if (header[5] != 0 || header[6] != 0)
     return false; // only format=Json, compression=None are supported
-  if (!(flags & ZmtpCodec::FLAG_MORE))
+  if (!(flags & ZmtpSession::FLAG_MORE))
     return false;
 
   // Frame 2: payload.
-  if (!ZmtpCodec::recv_frame_header(_sub_transport, flags, len, timeout_ms))
+  if (!_sub_session.recv_frame_header(flags, len, timeout_ms))
     return false;
   if (len > payload_cap) {
-    ZmtpCodec::skip_frame_body(_sub_transport, len, timeout_ms);
+    _sub_session.skip_frame_body(len, timeout_ms);
     return false;
   }
-  if (!ZmtpCodec::recv_frame_body(_sub_transport, payload_out, payload_cap, len,
-                                  timeout_ms))
+  if (!_sub_session.recv_frame_body(payload_out, payload_cap, len,
+                                    timeout_ms))
     return false;
   payload_len = static_cast<size_t>(len);
   _last_sub_rx = millis();

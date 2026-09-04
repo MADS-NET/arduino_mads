@@ -9,7 +9,7 @@
 Agent	KEYWORD1
 Transport	KEYWORD1
 WifiTransport	KEYWORD1
-ZmtpCodec	KEYWORD1
+ZmtpSession	KEYWORD1
 TomlScan	KEYWORD1
 
 #######################################

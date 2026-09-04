@@ -1,6 +1,7 @@
 #pragma once
 #include "toml_scan.hpp"
 #include "wifi_transport.hpp"
+#include "zmtp_session.hpp"
 #include <ArduinoJson.h>
 #include <cstddef>
 #include <cstdint>
@@ -17,7 +18,7 @@ namespace Mads {
 /**
  * A minimal, first-class MADS agent for the Arduino UNO R4 WiFi: talks
  * directly to an unmodified mads-broker over WiFi, using a from-scratch
- * ZMTP 3.0 client (ZmtpCodec) instead of the full libzmq/zmqpp stack the
+ * ZMTP 3.0 client (ZmtpSession) instead of the full libzmq/zmqpp stack the
  * desktop Mads::Agent depends on.
  *
  * Deliberately out of scope, matching this library's narrow purpose: CURVE
@@ -233,6 +234,8 @@ private:
 
   WifiTransport _pub_transport;
   WifiTransport _sub_transport;
+  ZmtpSession _pub_session{_pub_transport};
+  ZmtpSession _sub_session{_sub_transport};
   const char *_broker_host = nullptr;
   const char *_pub_topic = nullptr;
   // Retained so a reconnect can rejoin WiFi and re-run the settings

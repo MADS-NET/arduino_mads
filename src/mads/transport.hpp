@@ -6,7 +6,7 @@ namespace Mads {
 
 /**
  * Abstract byte-stream transport: a blocking-with-timeout TCP-like
- * connection, with no framing of its own. ZmtpCodec is written purely
+ * connection, with no framing of its own. ZmtpSession is written purely
  * against this interface so it can run either over WifiTransport (on an
  * Arduino board) or over a plain POSIX socket (in a desktop unit test
  * against a real mads-broker), with no code duplicated or diverging between
