@@ -32,6 +32,9 @@ work and is broken.
 1. **Fail closed on entropy.** If the entropy source is unavailable or fails a sanity check, the
    CURVE handshake must return `false`. There is no fallback to `random()`, `micros()`, or
    `analogRead()`. A weak transient key destroys forward secrecy silently.
+   Note this is unaffected by keys being PC-generated and compile-time embedded (Phase 6): that
+   settles where the *permanent* keypair comes from. The *transient* keypair and the vouch nonce
+   are still drawn on the board, per connection, and they are what this rule protects.
 2. **Never reuse a `(precom key, nonce)` pair.** Session state is created and destroyed with the
    transport. `ZmtpSession::reset()` is mandatory before every handshake, including reconnects.
 3. **Outgoing nonce counter starts at 1** and increments once per HELLO, INITIATE and MESSAGE.
@@ -527,6 +530,25 @@ publishing a 16 KB blob on the desktop build under a heap/stack watermark check.
 
 ## Phase 6 -- Agent API, secrets, examples
 
+### Key provisioning model (settled -- do not re-open)
+
+Keys are generated **off the board** with `mads --keypair=<name>` and embedded **at compile time**
+from the sketch's `arduino_secrets.h`. There is no on-board key generation, no key storage API,
+and no runtime provisioning path. Build to that and nothing else.
+
+Two consequences follow, and both need to be in the README rather than discovered later:
+
+* **The keypair is baked into the binary, so one sketch build = one identity.** Flash the same
+  `arduino_secrets.h` to five boards and the broker cannot tell them apart: ZAP allow-lists by
+  public key, so all five appear as the same client in `auth_verbose` output, and revoking one
+  means revoking all five and reflashing them. If per-board identity matters, generate
+  `uno_r4_01`, `uno_r4_02`, ... and build once per board. A shared fleet identity is a legitimate
+  choice for a sensor swarm -- it just has to be a choice, not an accident.
+* **This does not reduce the entropy requirement one bit.** See §1 rule 1. The *permanent*
+  keypair comes from the PC; the *transient* keypair `c'/C'` and the 16-byte vouch nonce are
+  still generated on the board, freshly, on every single connection. Phase 8's TRNG gate is
+  entirely unaffected by this decision.
+
 ```cpp
 #ifdef MADS_ENABLE_CURVE
   /// Arms CURVE for every connection this agent opens. Call before begin().
@@ -556,6 +578,13 @@ build_opt.h                  ->  -DMADS_ENABLE_CURVE
 arduino_secrets.h.example    ->  SSID/PASS/BROKER_HOST plus
                                  SECRET_CURVE_CLIENT_PUBLIC / _SECRET / SECRET_CURVE_BROKER_PUBLIC
 ```
+
+The three CURVE macros are the 40-character Z85 lines copied verbatim out of `<name>.pub`,
+`<name>.key` and `broker.pub`. Say in the example's comments that the `.key` line is a secret
+being pasted into source: `arduino_secrets.h` is gitignored (it already is), but the *built
+binary* carries it in plaintext, and the UNO R4's bootloader is open. That is the accepted
+trade -- CURVE defends against a network attacker, not against someone holding the board -- and
+it belongs in the README, not in a footnote.
 
 The sketch must print `last_curve_error()` on failure -- it is the only diagnostic a user gets.
 

@@ -246,7 +246,9 @@ Worth a decision before Phase 6, none blocking Phase 4:
   scalar multiplications per reconnect attempt make an unreachable broker considerably more
   expensive to keep retrying. This needs the real per-mult timing from Phase 8 step 3 before it
   can be answered.
-* **On-board key generation** would honour CRYPTO.md's "the private key shall never be moved from
-  the device where it was generated", which the current PC-generate-and-paste flow knowingly
-  breaks. It depends entirely on the Phase 8 TRNG gate. Out of scope as planned; worth revisiting
-  if the TRNG turns out to be solid.
+* ~~**On-board key generation**~~ -- **decided 2026-09-04: not doing it.** Keys are generated
+  separately with `mads --keypair` and compiled in from `arduino_secrets.h`. Do not re-open this;
+  build Phase 6 to it. Note it does not relax the Phase 8 TRNG gate at all -- the transient
+  keypair and vouch nonce are still drawn on the board per connection. See CURVE_PLAN.md Phase 6
+  for the two consequences that need documenting (one build = one identity; the secret ships in
+  plaintext flash).

@@ -276,7 +276,12 @@ compile byte-identically to today.
 
 ## 9. What stays out of scope
 
-* On-board key generation (depends on §5 landing first).
+* On-board key generation. **Settled: not doing it.** Keys are generated with
+  `mads --keypair` on a PC and embedded at compile time from `arduino_secrets.h`. This
+  knowingly departs from CRYPTO.md's "the private key shall never be moved from the device
+  where it was generated"; see CURVE_PLAN.md Phase 6 for the consequences. It does **not**
+  remove the need for a real TRNG -- the per-connection transient keypair and vouch nonce
+  are still generated on the board (§5).
 * CURVE *server* mode -- the board is only ever a client.
 * Certificate/key rotation, revocation, or any key storage beyond a header file.
 * PLAIN and GSSAPI -- MADS refuses them anyway (`zap_auth.cpp`).
