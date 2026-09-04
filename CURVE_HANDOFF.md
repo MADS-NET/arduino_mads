@@ -363,7 +363,12 @@ Worth a decision before Phase 6, none blocking Phase 4:
   requirement for the recommended fix, which does not depend on hardware timing.
 
   **The per-mult number is now measured: one `box_beforenm()` (a single X25519 plus HSalsa20)
-  takes 45.4 ms on the board.** At the four scalar multiplications a CURVE handshake needs, that
+  takes 45.4 ms on the board** -- 45449 us, or about 2.18M cycles at the RA4M1's 48 MHz (HOCO
+  48 MHz, PLL /4 x12, ICLK /1). Plausible for portable C rather than hand-written Cortex-M4
+  assembly. Worth noting as a side benefit: that figure came back **identical to the microsecond
+  across all three runs even though each drew a different key**, which is what a constant-time
+  scalar multiplication should do and is a small piece of evidence that Monocypher is not leaking
+  the secret scalar through timing. At the four scalar multiplications a CURVE handshake needs, that
   is roughly **180 ms of blocking compute per handshake attempt**, on top of the TCP connect. So
   the secondary question answers itself: a successful reconnect stalls `loop()` for about a fifth
   of a second, which is very visible for an agent sampling at 100 ms (`[uno_r4] delay = 100` in
