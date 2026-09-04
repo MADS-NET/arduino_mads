@@ -226,9 +226,15 @@ This also settles the library choice on its own: TweetNaCl's `crypto_scalarmult`
 here at all. Monocypher is not merely the faster option, it is the one that fits.
 
 **Scalar multiplication time.** It lands entirely in `begin()` and in the reconnect path, which
-already blocks `loop()` on `WiFiClient::connect()`. Four extra scalar mults per reconnect attempt
-make an unreachable broker noticeably more expensive to keep retrying, so
-`set_reconnect_interval()`'s default may want revisiting under CURVE.
+already blocks `loop()` on `WiFiClient::connect()`.
+
+[Certain, corrected 2026-09-04] An earlier version of this paragraph said the four extra scalar
+mults make an *unreachable* broker more expensive to retry. They do not: `ensure_pub_link()` and
+`ensure_sub_link()` call `transport.connect()` before `session.handshake()` and return on failure,
+so a down or unroutable broker never reaches any crypto. The costly case is the inverse -- TCP
+connects and the CURVE handshake is then *rejected*, which is what a mis-provisioned key looks
+like. That failure is deterministic and never self-heals, so retrying it once per second forever
+is pure waste; the fix is backoff keyed on that specific error, not a larger fixed interval.
 
 ## 7. The blob publish path
 

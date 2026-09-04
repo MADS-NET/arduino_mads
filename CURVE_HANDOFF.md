@@ -240,12 +240,21 @@ Beyond plan Appendix C, which still applies:
 
 Worth a decision before Phase 6, none blocking Phase 4:
 
-* **Is the 16-byte `pub_sub` flash overshoot acceptable?** Recommendation: yes, note it and move
-  on. The alternative is member-ordering trickery that regresses invisibly.
-* **Does `set_reconnect_interval()`'s 1 s default still make sense under CURVE?** Four X25519
-  scalar multiplications per reconnect attempt make an unreachable broker considerably more
-  expensive to keep retrying. This needs the real per-mult timing from Phase 8 step 3 before it
-  can be answered.
+* ~~**Is the 16-byte `pub_sub` flash overshoot acceptable?**~~ **Decided 2026-09-04: yes, not
+  worth chasing.** Recorded and closed. Do not spend time reclaiming it.
+* ~~**Does `set_reconnect_interval()`'s 1 s default still make sense under CURVE?**~~
+  **Reframed 2026-09-04 -- the original question rested on a false premise.** It claimed four
+  scalar multiplications per attempt make an *unreachable* broker expensive to retry. It does
+  not: `ensure_pub_link()`/`ensure_sub_link()` call `transport.connect()` *before*
+  `session.handshake()` and return on failure, so a broker that is down or unroutable costs zero
+  X25519. The expensive case is the opposite one -- **TCP connects and CURVE is then rejected**
+  (key not in the broker's keys dir, or the broker not restarted after adding it). That is
+  deterministic, never self-heals without human action, and under the current logic burns four
+  scalar multiplications every interval forever.
+  The interval default is therefore the wrong lever. See CURVE_PLAN.md Phase 6's backoff
+  requirement for the recommended fix, which does not depend on hardware timing. What still needs
+  Phase 8 step 3's per-mult number is only the secondary question of whether a *successful*
+  reconnect's added latency is noticeable in `loop()`.
 * ~~**On-board key generation**~~ -- **decided 2026-09-04: not doing it.** Keys are generated
   separately with `mads --keypair` and compiled in from `arduino_secrets.h`. Do not re-open this;
   build Phase 6 to it. Note it does not relax the Phase 8 TRNG gate at all -- the transient

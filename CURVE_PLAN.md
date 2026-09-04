@@ -588,8 +588,38 @@ it belongs in the README, not in a footnote.
 
 The sketch must print `last_curve_error()` on failure -- it is the only diagnostic a user gets.
 
+### Reconnect backoff on a rejected handshake (required)
+
+`ensure_pub_link()` and `ensure_sub_link()` call `transport.connect()` before
+`session.handshake()` and return on failure, so a broker that is down or unroutable costs no
+crypto at all. The case that does cost is the inverse: **TCP connects and CURVE is rejected** --
+the board's `.pub` is not in the broker's keys dir, or the broker was not restarted after it was
+added. That failure is deterministic. It will not fix itself, and under the current fixed
+interval the board burns four X25519 scalar multiplications every second, forever, inside
+`loop()`.
+
+Add, alongside `set_crypto()`:
+
+* On `CurveError::rejected`, back the retry interval off exponentially from
+  `reconnect_interval()` to a cap (60 s is a sensible default), instead of retrying at the fixed
+  interval.
+* Reset the backoff to `reconnect_interval()` on any successful handshake.
+* Do **not** apply backoff to a failed `transport.connect()` -- that is the "broker not up yet"
+  case the existing 1 s retry exists to serve, and it is cheap. Only the rejected-handshake path
+  backs off.
+* Expose the current backoff via an accessor so a sketch can show it; a board that has silently
+  slowed to one attempt per minute should be able to say so.
+
+This is a design addition beyond the original plan, made because the alternative -- raising
+`set_reconnect_interval()`'s default -- would slow the common, cheap, self-healing case in order
+to fix a rare, expensive, non-self-healing one. If you disagree, flag it to the owner rather than
+substituting your own approach.
+
 **Acceptance.** `examples/crypto_pub` compiles with `MADS_ENABLE_CURVE`, and the three existing
-examples compile without it. `arduino_secrets.h` stays gitignored (it already is).
+examples compile without it. `arduino_secrets.h` stays gitignored (it already is). A desktop
+test drives the rejected-handshake path -- a deliberately wrong client key against a real
+`--crypto` broker -- and asserts the retry interval grows, then resets after a good
+handshake.
 
 ---
 
