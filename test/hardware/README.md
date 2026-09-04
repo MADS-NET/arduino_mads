@@ -52,8 +52,13 @@ Any serial terminal works. Two notes if you script the capture:
 
 ### Results on 2026-09-04 (see CURVE_HANDOFF.md Sec 5 and Sec 1)
 
-TRNG passed: across 12 KB from three runs, two of them separate cold boots,
-768/768 distinct 16-byte blocks, entropy 7.982 bits/byte, bit balance
-0.4985, lag-1 correlation +0.002. One X25519 costs **45.4 ms**; the stack
-reached **1612-1668 bytes** below `__StackTop` against a **20436-byte** free
-gap.
+TRNG passed: across 16 KB from four runs -- two cold boots, one repeat run,
+and one true power cycle -- 1024/1024 distinct 16-byte blocks, entropy
+7.9875 bits/byte, bit balance 0.4987, lag-1 correlation +0.0014. The
+power-cycled run shares zero 16-byte blocks *and* zero 8-byte windows with
+any earlier run.
+
+One X25519 costs **45.4 ms** (identical to the microsecond on all four runs
+despite different keys each time -- constant-time, as it should be); the
+stack reached **1612-1668 bytes** below `__StackTop` against a **20436-byte**
+free gap.

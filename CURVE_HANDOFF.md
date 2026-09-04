@@ -80,21 +80,30 @@ board, doing Phase 8 step 1 early is cheap and de-risks everything.
 flashed and run; see `test/hardware/README.md` for how. `entropy_init()` returns OK, so the SCE
 TRNG initialises and passes its own health check on hardware, not just at the linker.
 
-Phase 8 step 1's three conditions, over 12 KB from three runs (two of them separate **cold boots**
--- a DTR toggle does *not* reset this board, only a re-upload or a power cycle does):
+Phase 8 step 1's three conditions, over 16 KB from four runs: two cold boots via re-upload, one
+second run on an existing boot, and **one true power cycle** (USB lead physically pulled and
+replugged). Note that a DTR toggle does *not* reset this board -- it only gets a second run on the
+same boot, which tests nothing about power-up state. The sketch prints `boot millis at run` so the
+two are always distinguishable.
 
 | condition | result |
 |---|---|
 | not constant | pass -- no all-zero or all-`0xFF` run |
-| no repeated 16-byte block | pass -- **768/768 distinct**, zero collisions, including across runs |
-| different across power cycles | pass -- two cold boots share **zero** 16-byte blocks and differ entirely |
+| no repeated 16-byte block | pass -- **1024/1024 distinct**, zero collisions, including across runs |
+| different across power cycles | pass -- see below |
 
-Supporting statistics on the combined 12 KB: Shannon entropy **7.982 bits/byte** (the finite-sample
-ideal for this many samples is ~7.985), bit balance **0.49849**, lag-1 serial correlation
-**+0.00218**. Byte chi-square is 303.4 on df=255, which sits around the 96th percentile -- a little
-high, unremarkable for one 12 KB sample, and worth re-checking if anyone ever collects more.
+The power-cycled run shares **zero 16-byte blocks and zero 8-byte windows** with any of the three
+earlier runs (4089 windows each, no collision at all). So the TRNG does not resume a stream, replay
+a power-up state, or seed itself from anything reproducible.
 
-Treat this as a bring-up gate that the TRNG **passed**, not as a statistical certification: 12 KB
+Supporting statistics on the combined 16 KB: Shannon entropy **7.9875 bits/byte** (the
+finite-sample ideal at this many samples is ~7.9888), bit balance **0.49866**, lag-1 serial
+correlation **+0.00139**, byte chi-square **280.3** on df=255. That chi-square is worth a note: at
+12 KB it read 303.4, around the 96th percentile, which was recorded here as mildly high and worth
+re-checking with more data. With the fourth run added it fell to 280.3, an entirely ordinary value
+-- so that reading was sampling noise, as expected, and is now resolved rather than outstanding.
+
+Treat this as a bring-up gate that the TRNG **passed**, not as a statistical certification: 16 KB
 is far too little for that, and NIST SP 800-90B or dieharder over megabytes is what certification
 would mean. Nothing here suggests it would be needed.
 
