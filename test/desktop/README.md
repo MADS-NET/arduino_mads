@@ -72,12 +72,40 @@ make test
 make stackreport
 ```
 
-Compiles every `src/mads/*.cpp` (and `src/mads/crypto/*.cpp` once present)
-at `-O0 -fno-inline -fstack-usage`, builds a call graph from the resulting
-disassembly, and reports the heaviest root-to-leaf stack sum -- see
-`stackreport.py`'s module docstring for exactly what this does and does not
-account for (it is a budgeting aid for CURVE_PLAN.md Sec 7.2's 512-byte
-`curve_handshake` limit, not a formal proof).
+Compiles every `src/mads/*.cpp` and `src/mads/crypto/*.{cpp,c}` at
+`-O0 -fno-inline -fstack-usage`, builds a call graph from the resulting
+disassembly and relocations, and reports the heaviest root-to-leaf stack
+sum -- see `stackreport.py`'s module docstring for exactly what this does
+and does not account for (it is a budgeting aid, not a formal proof).
+
+Pass a substring as a second argument to report one entry point's chain
+instead of the heaviest overall:
+
+```sh
+OBJDUMP=... CXXFILT=... python3 stackreport.py build/stackreport-arm box_beforenm
+```
+
+## `make stackreport-arm`
+
+```sh
+make stackreport-arm
+```
+
+**This is the one to believe for a board budget.** It builds the crypto
+sources with the UNO R4 WiFi's actual toolchain and flags
+(`arm-none-eabi-gcc` 7-2017q4, `-Os`, cortex-m4 hard-float, taken from
+renesas_uno 1.6.0's `platform.txt`/`boards.txt`). The plain `stackreport`
+target is a host build at `-O0`; its frame sizes are much larger and do not
+transfer to the board. Scope is the crypto sources only, because they are
+freestanding -- `mads_agent.cpp` needs `WiFiS3.h` and ArduinoJson, which
+exist only inside a full Arduino build.
+
+Override the toolchain location with `ARM_TOOLCHAIN=/path/to/bin` if the
+core is installed somewhere unusual.
+
+What it currently reports, and why it matters, is in CURVE_HANDOFF.md
+Sec 5: a single `box_beforenm()` (one X25519) is 864 bytes against the
+board's 1024-byte main stack.
 
 ## `MADS_ENABLE_CURVE`
 

@@ -170,38 +170,60 @@ drops the unreferenced `crypto/*.cpp` object code entirely, and `monocypher_unit
 without the macro contains **0 symbols / 32 bytes** (ELF overhead only). These are the numbers
 plan §7.3's disabled-build check compares against.
 
-### Stack -- read the caveat, the headline number is misleading
+### Stack -- MEASURED on the board's toolchain 2026-09-04, and it is a Phase 4 blocker
 
-`make stackreport` currently reports a **368-byte** deepest chain (`secretbox_open`). Two reasons
-not to trust that against plan §7.2's 512-byte `curve_handshake` budget:
+The suspicion recorded here was right, and the reality is worse. `stackreport` was under-reporting
+in four independent ways (all fixed in commit `1ed8056`; see that message for the mechanics) -- the
+worst being that in an unlinked object every cross-function call disassembles to an unresolved
+placeholder pointing at the *caller*, so under `-ffunction-sections` the ARM call graph was nothing
+but self-edges and every chain collapsed to one frame. The old 368-byte figure measured almost
+nothing.
 
-1. It is **x86-64 at `-O0 -fno-inline`**, not `arm-none-eabi` at `-Os`. Frame sizes differ in both
-   directions.
-2. **`stackreport.py` only walks `src/mads/*.cpp` and `src/mads/crypto/*.cpp` -- it does not
-   include `monocypher_unit.c`.** Monocypher is almost certainly the deepest frame in the whole
-   handshake and it is invisible in that 368.
+`make stackreport-arm` now builds the crypto sources with the UNO R4 WiFi's real toolchain and
+flags (arm-none-eabi-gcc 7-2017q4, `-Os`, cortex-m4 hard-float, from renesas_uno 1.6.0). Measured
+root-to-leaf chains:
 
-Measured separately here with `gcc -O2 -fno-inline -fstack-usage` on the vendored source
-(x86-64, so indicative only):
-
-| function | frame |
+| chain | bytes |
 |---|---|
-| `scalarmult` | **432 B** static |
-| `crypto_x25519` | 64 B (calls `scalarmult`) |
-| `fe_invert` / `fe_mul` | 80 / 128 B |
-| **plausible `crypto_x25519` chain total** | **~700 B** |
+| `Mads::box_beforenm` (one X25519 + HSalsa20) | **864** |
+| `crypto_x25519` alone | 800 |
+| `Mads::secretbox_open` | 688 |
+| `Mads::secretbox_seal` | 672 |
 
-**This puts plan §7.2's 512-byte budget for `curve_handshake` in doubt before Phase 4 starts.**
-The board's reserved main stack is 1 KB (`BSP_CFG_STACK_MAIN_BYTES = 0x400`) with the
-stack-pointer monitor disabled, so an overflow corrupts silently rather than faulting. Before
-building on that budget: extend `stackreport.py` to include `.c` sources, re-measure on
-`arm-none-eabi-gcc -Os`, and if X25519 alone eats the budget, re-base it -- e.g. treat
-`crypto_x25519` as a separate line item and require everything *around* it to fit in what remains.
-Do not silently exceed it.
+Against a **1024-byte** main stack -- `BSP_CFG_STACK_MAIN_BYTES = 0x400`, confirmed in
+`variants/UNOWIFIR4/memory_regions.ld` and `bsp_cfg.h`, with the stack-pointer monitor disabled, so
+an overflow corrupts silently instead of faulting.
 
-For reference, two Monocypher functions that would blow the stack instantly if anything ever pulls
-them in: `crypto_argon2` (3424 B) and `crypto_eddsa_check_equation` (1184 B). Both are unused and
-dropped by `--gc-sections` today. If a future change references Ed25519 or Argon2, that is a
+**A single `box_beforenm()` is 864 B: 84% of the entire main stack, and 1.7x plan Sec 7.2's
+512-byte budget for the whole of `curve_handshake` -- before `curve_handshake`'s own frame, its
+HELLO/INITIATE/vouch buffers, or anything already on the stack underneath it in `loop()`.** These
+chains are sequential rather than nested, so the peak is roughly `max(864, 688, 672)` plus the
+frames above, but that leaves on the order of 150 bytes for everything else. Phase 4 cannot be
+built to the current budget, and the problem is the 1 KB stack rather than the budget number.
+
+This needs a decision before Phase 4 starts; do not start writing `curve_handshake` against the
+512-byte figure. The options, none of them free:
+
+1. **Raise `BSP_CFG_STACK_MAIN_BYTES`.** It lives in the *core's* variant files, not the sketch, so
+   a library cannot set it and every user would have to patch their core install. Almost certainly
+   unacceptable for a distributable library, but it is the only option that changes the ceiling.
+2. **Shrink X25519.** The 800 comes mostly from `scalarmult` (320) plus `fe_mul` (232) and
+   `invsqrt` (144). Monocypher has no smaller X25519 build knob, so this means a different
+   implementation, which reopens the Phase 2 primitive choice.
+3. **Move the handshake off `loop()`'s stack** -- run it early with a known-shallow caller, and/or
+   give the handshake static scratch instead of locals. This only helps with the frames *we* own;
+   the 800 bytes inside Monocypher cannot be relocated.
+4. **Re-base the budget honestly**: make `box_beforenm` its own line item at ~900 B and require
+   everything else in the handshake to fit the remainder. Cheapest to write down, and it is what
+   the plan should say regardless -- but the remainder is too small to be a real budget, so this
+   alone does not make Phase 4 safe.
+
+Whatever is chosen, Phase 8 should measure the real high-water mark on the board (paint the stack
+and look for the untouched watermark) rather than trusting any static sum, including this one.
+
+For reference, the two Monocypher functions that would blow the stack instantly if anything ever
+pulled them in: `crypto_argon2` (2992 B chain) and `crypto_eddsa_check` (1720 B). Both are unused
+and dropped by `--gc-sections` today. If a future change references Ed25519 or Argon2 that is a
 correctness problem, not a size problem.
 
 ---
