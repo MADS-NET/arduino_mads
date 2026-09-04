@@ -650,16 +650,56 @@ not fault -- it silently corrupts whatever lies below.
 In practice the usable stack is bounded by the gap between `__StackTop` and the top of the 8 KB
 heap rather than by the reserved 0x400, so more than 1 KB often works. Do not rely on that.
 
-Rules:
+**Re-based 2026-09-04 against measurements on a real board. Read this before budgeting anything.**
+The original rule here -- "record the deepest chain through `curve_handshake`; if it exceeds 512
+bytes, hoist more state to statics until it does not" -- is **not achievable and has been
+withdrawn.** Measured with the board's own toolchain (`make stackreport-arm`:
+arm-none-eabi-gcc 7-2017q4, `-Os`, cortex-m4 hard-float):
+
+| chain | bytes |
+|---|---|
+| `box_beforenm` (one X25519 + HSalsa20) | **864** |
+| `secretbox_open` | 688 |
+| `secretbox_seal` | 672 |
+
+A single `box_beforenm` is already 1.7x the old 512-byte budget, and hoisting cannot fix it: those
+bytes are frames *inside* Monocypher (`scalarmult` 320, `fe_mul` 232, `invsqrt` 144), not buffers
+this code owns. No amount of making our own state static moves them.
+
+The good news is that the ceiling was misread. `BSP_CFG_STACK_MAIN_BYTES = 0x400` is the
+*guaranteed minimum* gap between heap and stack, not the stack's size: in `fsp.ld` the heap grows
+up from `__HeapBase` and the stack grows down from `__StackTop`, and nothing faults on crossing
+`__StackLimit`. Measured on the board with `test/hardware/phase8_diag`:
+
+| quantity | measured |
+|---|---|
+| free gap, heap break -> `__StackTop` | **20436 B** |
+| stack high-water running the crypto | **1612-1668 B** |
+| ... i.e. beyond the 1024 B reservation | 588-644 B |
+
+So the stack does cross `__StackLimit` routinely, silently, and harmlessly, and peak usage is
+about **8%** of what is actually available.
+
+Rules, replacing the ones above:
 * Every CURVE working buffer -- HELLO (200 B), INITIATE (~300 B), WELCOME (168 B), the transient
-  keypair, `k_Sc`, the cookie -- is a **file-static** buffer inside `#ifdef MADS_ENABLE_CURVE`,
-  not a local. Disabled builds pay nothing for them.
+  keypair, `k_Sc`, the cookie -- is still a **file-static** buffer inside
+  `#ifdef MADS_ENABLE_CURVE`, not a local. Disabled builds pay nothing for them. This rule is
+  unchanged and still worth following: it is what keeps the part we *can* control small.
 * Reuse one static scratch buffer across HELLO/WELCOME/INITIATE; they do not overlap in time.
-* Run `make stackreport` (Phase 0) and record the deepest chain through `curve_handshake`. If it
-  exceeds **512 bytes**, hoist more state to statics until it does not.
+* Budget in two separate line items, because they behave differently:
+  **(a) Monocypher's own frames, ~900 B, fixed and not reducible**; and
+  **(b) everything `curve_handshake` and its callers add on top, which must stay under 512 B.**
+  Only (b) is a budget anyone can act on. Check it with
+  `make stackreport-arm` and the root-substring argument (`python3 stackreport.py <dir>
+  curve_handshake`), subtracting the `box_beforenm` line item.
+* The real failure mode is a **stack/heap collision, not a stack overflow**, and it is silent.
+  That is a whole-sketch property -- ArduinoJson v7 heap-allocates every `JsonDocument` -- so it
+  cannot be settled statically. Phase 8 must re-measure the high-water mark with the real agent
+  running, not just the crypto.
 * This is also why Monocypher and not TweetNaCl: TweetNaCl's `crypto_scalarmult` puts
-  `i64 x[80]` (640 B) and six 128-byte `gf` locals in one frame -- roughly 1.4 KB, which does not
-  fit here at all.
+  `i64 x[80]` (640 B) and six 128-byte `gf` locals in one frame -- roughly 1.4 KB. At the measured
+  ~900 B for Monocypher that choice is still clearly right, and by a wider margin than the
+  original 512-byte framing suggested.
 
 ### 7.3 Footprint
 
