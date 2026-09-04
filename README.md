@@ -36,7 +36,9 @@ directly over WiFi, with no host-PC bridge involved:
   tear down healthy links on low-rate topics. Enable it only when you expect traffic at a known
   minimum rate.
 - JSON payloads only, uncompressed (`format=Json`, `compression=None` in the MADS wire header) --
-  no MsgPack, no Snappy compression, no CURVE encryption.
+  no MsgPack, no Snappy compression, no CURVE encryption. What supporting a `--crypto` broker
+  would actually take -- wire layout, primitives, RAM/flash/CPU budget and the open questions --
+  is written up in [CURVE.md](CURVE.md); it is a study, not an implementation.
 - Binary blobs on the publish side: `Agent::publish(const uint8_t *, size_t, JsonDocument &meta)`
   sends `[topic][json meta][raw bytes]`, the same frame the desktop `Agent`'s blob `publish()`
   emits under the default JSON wire format (header-less: the header-carrying blob form is only
