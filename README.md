@@ -37,6 +37,14 @@ directly over WiFi, with no host-PC bridge involved:
   minimum rate.
 - JSON payloads only, uncompressed (`format=Json`, `compression=None` in the MADS wire header) --
   no MsgPack, no Snappy compression, no CURVE encryption.
+- Binary blobs on the publish side: `Agent::publish(const uint8_t *, size_t, JsonDocument &meta)`
+  sends `[topic][json meta][raw bytes]`, the same frame the desktop `Agent`'s blob `publish()`
+  emits under the default JSON wire format (header-less: the header-carrying blob form is only
+  used for MsgPack, and MADS peers tell a blob from a legacy compressed-JSON message by part
+  count). The blob is written straight from the caller's buffer, so its size is bounded by the
+  link rather than by this library's RAM; only the metadata goes through the internal 256-byte
+  serialization buffer. Receiving blobs stays out of scope -- `poll()` handles the header form
+  only.
 - Standard MADS envelope fields: `Agent::publish(JsonDocument&)` merges `agent_id`, `hostname` and
   `millis` into the caller's payload before sending -- the same shape every desktop MADS agent's
   messages carry (`agent_id`/`hostname`/`timecode`/`timestamp`), with `millis` standing in for
@@ -47,6 +55,17 @@ directly over WiFi, with no host-PC bridge involved:
   structure. It's fully portable, plain C++ with no Arduino-specific requirement, so it needs no
   `#ifdef`/conditional to also compile in desktop unit tests, just the right include path. The
   lower-level `publish(const char*, size_t)` (no merge, sends bytes verbatim) remains available.
+  The same three fields are merged into a blob publish's `meta` document, which also gets
+  `format = "raw"` if the sketch didn't set it -- the key consumers such as `mads echo` read to
+  know what the bytes are:
+
+  ```cpp
+  uint8_t frame[256];
+  JsonDocument meta;
+  meta["format"] = "adc_u8";
+  agent.publish(frame, sizeof(frame), meta, "blobs");
+  ```
+
   Sketches don't need their own `#include <ArduinoJson.h>` -- `#include <MadsUnoAgent.h>` already
   pulls it in transitively (`MadsUnoAgent.h` -> `mads/mads_agent.hpp` -> `<ArduinoJson.h>`), so
   `JsonDocument`/`JsonArray`/`serializeJson` etc. are available straight away; see any example.
@@ -115,8 +134,14 @@ failed intermittently on reboot (`hostname` came back `"0.0.0.0"`, settings neve
 `WL_CONNECTED` before doing anything else network-dependent.
 
 Not yet exercised on hardware: the SUB/poll() path (`examples/pub_sub`) -- including its
-reconnect/subscription-replay branch and the optional silence watchdog -- and CURVE-enabled
-brokers (out of scope by design -- see above).
+reconnect/subscription-replay branch and the optional silence watchdog -- the blob `publish()`
+overload, and CURVE-enabled brokers (out of scope by design -- see above).
+
+The blob overload's wire frame *was* verified against a real `mads broker` and a real `mads echo`,
+just not from the board: `mads_agent.cpp` builds unchanged for the desktop against a POSIX-socket
+stand-in for `WiFiS3.h` (the desktop test transport.hpp's doc comment anticipates), and `mads echo
+--jsonl` decoded its output as `type: blob` with the expected size, bytes and `format`, for both a
+small blob and a 1000-byte one (the >255-byte ZMTP large-frame header path).
 
 ---
 

@@ -322,10 +322,60 @@ bool Agent::publish(JsonDocument &payload, const char *topic) {
   payload["hostname"] = _hostname;
   payload["millis"] = millis();
 
-  size_t len = serializeJson(payload, _publish_buf, sizeof(_publish_buf));
+  size_t len = serialize_envelope(payload);
   if (len == 0)
     return false;
   return publish(_publish_buf, len, topic);
+}
+
+bool Agent::publish(const uint8_t *blob, size_t blob_len, JsonDocument &meta,
+                    const char *topic) {
+  if (!blob && blob_len > 0)
+    return false;
+
+  meta["agent_id"] = _agent_id;
+  meta["hostname"] = _hostname;
+  meta["millis"] = millis();
+  // Same default the desktop Agent's blob publish() carries in its meta
+  // parameter; consumers (`mads echo`, plugin loaders) read this key to
+  // decide how to interpret the bytes, falling back to "raw" themselves.
+  if (meta["format"].isNull())
+    meta["format"] = "raw";
+
+  size_t meta_len = serialize_envelope(meta);
+  if (meta_len == 0)
+    return false;
+
+  if (!ensure_pub_link())
+    return false;
+  const char *use_topic = topic ? topic : _pub_topic;
+
+  // [topic][json meta][raw bytes] -- the legacy 3-part blob frame, which is
+  // what the desktop Agent emits for a blob under the JSON wire format, and
+  // deliberately header-less: see the overload's doc comment in the header.
+  bool sent =
+      ZmtpCodec::send_frame(_pub_transport,
+                            reinterpret_cast<const uint8_t *>(use_topic),
+                            strlen(use_topic), true) &&
+      ZmtpCodec::send_frame(_pub_transport,
+                            reinterpret_cast<const uint8_t *>(_publish_buf),
+                            meta_len, true) &&
+      ZmtpCodec::send_frame(_pub_transport, blob, blob_len, false);
+
+  if (!sent)
+    _pub_transport.close(); // same half-sent-message reasoning as above
+  return sent;
+}
+
+size_t Agent::serialize_envelope(JsonDocument &doc) {
+  size_t len = serializeJson(doc, _publish_buf, sizeof(_publish_buf));
+  // serializeJson() truncates silently when the buffer is too small, and
+  // only NUL-terminates when the text fit strictly within it -- so a result
+  // filling the buffer exactly is either truncated or unterminated, and
+  // either way must not be sent (or read back by last_publish_json()).
+  if (len >= sizeof(_publish_buf))
+    return 0;
+  return len;
 }
 
 bool Agent::poll(char *topic_out, size_t topic_cap, uint8_t *payload_out,

@@ -21,8 +21,10 @@ namespace Mads {
  * desktop Mads::Agent depends on.
  *
  * Deliberately out of scope, matching this library's narrow purpose: CURVE
- * encryption, MsgPack, Snappy compression, blob/binary payloads, dynamic
- * re-subscription, and settings persistence.
+ * encryption, MsgPack, Snappy compression, dynamic re-subscription, and
+ * settings persistence. Binary blobs can be published (see the
+ * publish(const uint8_t *, size_t, JsonDocument &) overload) but never
+ * received.
  *
  * publish(JsonDocument&) merges the caller's payload with the standard
  * MADS envelope fields every desktop agent's messages carry -- `agent_id`,
@@ -112,6 +114,27 @@ public:
   bool publish(JsonDocument &payload, const char *topic = nullptr);
 
   /**
+   * Publishes a binary blob: `blob_len` bytes sent verbatim, preceded by a
+   * JSON metadata part, as `[topic][json meta][raw bytes]` -- exactly the
+   * frame the desktop Agent's publish(const char *, size_t, meta, topic)
+   * emits under the default (JSON) wire format. Note the absence of the
+   * 12-byte MADS header the other two overloads send: the header-carrying
+   * blob form ([topic][header(has_blob)][meta][bytes]) is only emitted by
+   * the desktop Agent for MsgPack, and a real MADS peer tells a header-less
+   * blob from a legacy compressed-JSON message by part count alone (3 vs 2).
+   *
+   * `meta` is mutated in place, like publish(JsonDocument&): the same
+   * envelope fields (`agent_id`, `hostname`, `millis`) are merged in, and
+   * `format` is set to "raw" if the caller left it unset -- consumers such
+   * as `mads echo` read the blob's kind from that key. Only the metadata
+   * passes through this class's internal serialization buffer; the blob
+   * itself is written straight from the caller's memory, so its size is
+   * bounded by the link, not by this library's RAM budget.
+   */
+  bool publish(const uint8_t *blob, size_t blob_len, JsonDocument &meta,
+               const char *topic = nullptr);
+
+  /**
    * Non-blocking: if a message is waiting on the SUB connection, decodes it
    * into `topic_out`/`payload_out` and returns true; otherwise returns
    * false immediately. Malformed or non-JSON-uncompressed frames (e.g. the
@@ -170,7 +193,8 @@ public:
   /// resolved once begin() has joined WiFi.
   const char *hostname() const { return _hostname; }
   /// The exact JSON text sent by the most recent publish(JsonDocument&)
-  /// call -- for logging/diagnostics.
+  /// call, or the metadata part of the most recent blob publish() -- for
+  /// logging/diagnostics.
   const char *last_publish_json() const { return _publish_buf; }
 
   /**
@@ -202,6 +226,10 @@ private:
   bool ensure_pub_link();
   /// Same for the SUB link; replays stored subscriptions on a fresh socket.
   bool ensure_sub_link();
+  /// Serializes `doc` into _publish_buf. Returns the byte count, or 0 if it
+  /// did not fit (see the definition for why a full buffer counts as a
+  /// failure rather than a snug fit).
+  size_t serialize_envelope(JsonDocument &doc);
 
   WifiTransport _pub_transport;
   WifiTransport _sub_transport;
