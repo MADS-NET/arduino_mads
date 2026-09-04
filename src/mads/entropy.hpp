@@ -27,5 +27,15 @@ bool entropy_init();
 /// non-negotiable above.
 bool entropy_fill(uint8_t *out, size_t n);
 
+#ifdef MADS_CURVE_TEST_ENTROPY
+/// Test-only: rewinds the deterministic stream to its fixed seed. Exists so
+/// each golden vector is independent -- without it the second handshake in a
+/// process continues the first one's stream, and re-recording one vector
+/// would cascade into the others. Never present in a board build: the whole
+/// MADS_CURVE_TEST_ENTROPY path carries an #error tripwire against ARDUINO
+/// (entropy_desktop.cpp).
+void entropy_test_reset();
+#endif
+
 } // namespace Mads
 #endif // MADS_ENABLE_CURVE

@@ -172,11 +172,34 @@ $(CURVE_HS_BIN): $(CURVE_HS_SRCS) $(SRC_DIR)/crypto/monocypher_unit.c
 endif
 
 # ---------------------------------------------------------------------------
+# test_curve_golden -- Phase 4 golden vectors. Needs MADS_CURVE_TEST_ENTROPY
+# as well as MADS_ENABLE_CURVE (a pinned entropy stream is the only way the
+# handshake is byte-reproducible), and talks to a scripted mock broker, so
+# it needs no network and always runs.
+# ---------------------------------------------------------------------------
+CURVE_GOLD_TEST_SRC := test_curve_golden.cpp
+CURVE_GOLD_BIN := $(BUILD)/test_curve_golden
+HAVE_CURVE_GOLD_TEST := $(wildcard $(CURVE_GOLD_TEST_SRC))
+
+ifneq ($(HAVE_CURVE_GOLD_TEST),)
+CURVE_GOLD_SRCS := $(CURVE_GOLD_TEST_SRC) $(SRC_DIR)/curve.cpp \
+                   $(SRC_DIR)/zmtp_session.cpp $(SRC_DIR)/entropy_desktop.cpp \
+                   $(SRC_DIR)/crypto/salsa20.cpp $(SRC_DIR)/crypto/nacl_box.cpp
+
+$(CURVE_GOLD_BIN): $(CURVE_GOLD_SRCS) curve_golden.inc $(SRC_DIR)/crypto/monocypher_unit.c
+	$(CC) -std=c99 -Wall -O0 -g $(SAN) -DMADS_ENABLE_CURVE \
+	  -c $(SRC_DIR)/crypto/monocypher_unit.c -o $(BUILD)/monocypher_unit_gold.o
+	$(CXX) $(CXXFLAGS) -DMADS_ENABLE_CURVE -DMADS_CURVE_TEST_ENTROPY \
+	  -I$(SRC_DIR)/.. -I$(SRC_DIR)/crypto $(CURVE_GOLD_SRCS) \
+	  $(BUILD)/monocypher_unit_gold.o -o $@ $(LDFLAGS)
+endif
+
+# ---------------------------------------------------------------------------
 # Top-level targets
 # ---------------------------------------------------------------------------
 .PHONY: all test clean stackreport stackreport-arm
 
-all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN)) $(if $(HAVE_CURVE_HS_TEST),$(CURVE_HS_BIN))
+all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN)) $(if $(HAVE_CURVE_HS_TEST),$(CURVE_HS_BIN)) $(if $(HAVE_CURVE_GOLD_TEST),$(CURVE_GOLD_BIN))
 
 test: all
 	@echo "--- test_toml_scan ---"
@@ -186,6 +209,10 @@ test: all
 ifneq ($(HAVE_CRYPTO_TEST),)
 	@echo "--- test_crypto_vectors ---"
 	$(CRYPTO_BIN)
+endif
+ifneq ($(HAVE_CURVE_GOLD_TEST),)
+	@echo "--- test_curve_golden ---"
+	$(CURVE_GOLD_BIN)
 endif
 ifneq ($(HAVE_CURVE_HS_TEST),)
 	@echo "--- test_curve_handshake ---"

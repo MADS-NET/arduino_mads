@@ -38,6 +38,8 @@ uint64_t g_state = 0x2545F4914F6CDD1DULL; // arbitrary fixed non-zero seed
 
 bool entropy_init() { return true; }
 
+void entropy_test_reset() { g_state = 0x2545F4914F6CDD1DULL; }
+
 bool entropy_fill(uint8_t *out, size_t n) {
   for (size_t i = 0; i < n; ++i) {
     g_state = g_state * 6364136223846793005ULL + 1442695040888963407ULL;
