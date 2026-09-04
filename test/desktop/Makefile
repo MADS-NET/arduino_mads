@@ -132,7 +132,7 @@ endif
 # ---------------------------------------------------------------------------
 # Top-level targets
 # ---------------------------------------------------------------------------
-.PHONY: all test clean stackreport
+.PHONY: all test clean stackreport stackreport-arm
 
 all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN))
 
@@ -166,20 +166,79 @@ endif
 # (Phase 4+, out of this pass's scope) to prove the 512-byte budget in
 # CURVE_PLAN.md Sec 7.2.
 # ---------------------------------------------------------------------------
+# C sources are included deliberately: Monocypher is C, and omitting it made
+# the report silently miss the deepest frame in the whole handshake.
 STACKREPORT_SRCS := $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(SRC_DIR)/crypto/*.cpp)
+STACKREPORT_CSRCS := $(wildcard $(SRC_DIR)/crypto/*.c)
 STACKREPORT_BUILD := $(BUILD)/stackreport
 
+# -O0 -fno-inline, matching stackreport.py's docstring: this target is for
+# seeing call-graph *structure*, not for board budgeting. Use
+# `stackreport-arm` for numbers to actually budget against.
 stackreport:
 	@mkdir -p $(STACKREPORT_BUILD)
 	@for f in $(STACKREPORT_SRCS); do \
 	  base=$$(basename $$f .cpp); \
-	  $(CXX) $(STD) $(WARN) -O1 -fstack-usage -DMADS_ENABLE_CURVE \
+	  $(CXX) $(STD) $(WARN) -O0 -fno-inline -fstack-usage -DMADS_ENABLE_CURVE \
 	    $(INCLUDES) -I$(SRC_DIR)/.. -I$(SRC_DIR)/crypto \
 	    -c $$f -o $(STACKREPORT_BUILD)/$$base.o \
 	    2>/dev/null || true; \
 	  mv -f $$base.su $(STACKREPORT_BUILD)/ 2>/dev/null || true; \
 	done
+	@for f in $(STACKREPORT_CSRCS); do \
+	  base=$$(basename $$f .c); \
+	  $(CC) -std=c99 $(WARN) -O0 -fno-inline -fstack-usage -DMADS_ENABLE_CURVE \
+	    -I$(SRC_DIR)/crypto -c $$f -o $(STACKREPORT_BUILD)/$$base.o \
+	    2>/dev/null || true; \
+	  mv -f $$base.su $(STACKREPORT_BUILD)/ 2>/dev/null || true; \
+	done
 	@python3 stackreport.py $(STACKREPORT_BUILD)
+
+# ---------------------------------------------------------------------------
+# stackreport-arm -- the numbers that actually mean something for the board.
+#
+# Same sources, but built with the UNO R4 WiFi's real toolchain and real
+# flags (arm-none-eabi-gcc 7-2017q4, -Os, cortex-m4 hard-float), taken from
+# renesas_uno 1.6.0's platform.txt/boards.txt. The host `stackreport` target
+# is x86-64 at -O0 and its frame sizes do not transfer.
+#
+# Scope is deliberately the crypto sources only: they are freestanding, while
+# mads_agent.cpp pulls in WiFiS3.h and ArduinoJson, which only exist inside a
+# full Arduino build. That is enough for what this is needed for -- sizing
+# X25519 and the NaCl box layer against CURVE_PLAN.md Sec 7.2.
+# ---------------------------------------------------------------------------
+ARM_TOOLCHAIN ?= $(HOME)/Library/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/bin
+ARM_PREFIX := $(ARM_TOOLCHAIN)/arm-none-eabi-
+ARM_MCU := -mcpu=cortex-m4 -mfloat-abi=hard -mfpu=fpv4-sp-d16
+ARM_COMMON := -Os -g3 -nostdlib -ffunction-sections -fdata-sections \
+              -fsigned-char -fno-builtin -fmessage-length=0 \
+              -fstack-usage -DMADS_ENABLE_CURVE
+STACKREPORT_ARM_BUILD := $(BUILD)/stackreport-arm
+
+stackreport-arm:
+	@if [ ! -x "$(ARM_PREFIX)gcc" ]; then \
+	  echo "stackreport-arm: $(ARM_PREFIX)gcc not found."; \
+	  echo "  Install the UNO R4 core (arduino-cli core install arduino:renesas_uno),"; \
+	  echo "  or pass ARM_TOOLCHAIN=/path/to/arm-none-eabi/bin."; \
+	  exit 1; \
+	fi
+	@mkdir -p $(STACKREPORT_ARM_BUILD)
+	@for f in $(wildcard $(SRC_DIR)/crypto/*.cpp); do \
+	  base=$$(basename $$f .cpp); \
+	  $(ARM_PREFIX)g++ -std=gnu++17 -fno-rtti -fno-exceptions $(ARM_MCU) \
+	    $(ARM_COMMON) -I$(SRC_DIR)/crypto -I$(SRC_DIR) \
+	    -c $$f -o $(STACKREPORT_ARM_BUILD)/$$base.o || exit 1; \
+	  mv -f $$base.su $(STACKREPORT_ARM_BUILD)/ 2>/dev/null || true; \
+	done
+	@for f in $(STACKREPORT_CSRCS); do \
+	  base=$$(basename $$f .c); \
+	  $(ARM_PREFIX)gcc -std=gnu11 $(ARM_MCU) \
+	    $(ARM_COMMON) -I$(SRC_DIR)/crypto \
+	    -c $$f -o $(STACKREPORT_ARM_BUILD)/$$base.o || exit 1; \
+	  mv -f $$base.su $(STACKREPORT_ARM_BUILD)/ 2>/dev/null || true; \
+	done
+	@OBJDUMP=$(ARM_PREFIX)objdump CXXFILT=$(ARM_PREFIX)c++filt \
+	  python3 stackreport.py $(STACKREPORT_ARM_BUILD)
 
 clean:
 	rm -rf $(BUILD) *.su
