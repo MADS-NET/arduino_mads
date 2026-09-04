@@ -44,8 +44,19 @@ work and is broken.
 7. **MESSAGE frames are ordinary frames** (outer ZMTP flags `0x00`, or `0x02` when the body
    exceeds 255 bytes). They are *not* command frames. `MORE` lives inside the ciphertext.
    Handshake commands (HELLO/INITIATE) *are* command frames (`0x04`).
-8. **Salsa20 block 0 is the Poly1305 key; ciphertext starts at block 1.** This is the single most
-   common implementation bug in this area.
+8. **The Poly1305 key is keystream bytes 0-31; the ciphertext starts at keystream byte 32.**
+   Not at the 64-byte block boundary. Keystream bytes 32-63 -- the second half of block 0 -- are
+   reused to encrypt the message's first 32 bytes, and only bytes beyond that come from block 1
+   onward. This is the classic NaCl `crypto_secretbox` convention
+   (`crypto_box_ZEROBYTES = 32`, `crypto_box_BOXZEROBYTES = 16`) and it is what libzmq v4.3.5
+   does: `curve_mechanism_base.cpp` calls libsodium's
+   `crypto_box_easy_afternm`/`crypto_box_open_easy_afternm`.
+   *Correction, 2026-09-04.* Earlier drafts of this rule said "block 0 is the Poly1305 key,
+   ciphertext starts at block 1", which reads as the 64-byte boundary and would misalign every
+   frame by 32 bytes against a real broker. That wording came from RFC 8439's
+   ChaCha20-Poly1305 construction, where the block-boundary split *is* correct -- it is not
+   correct for NaCl's XSalsa20-Poly1305. Confirmed by the NaCl `box.c`/`secretbox.c` vectors,
+   which pass only under the byte-32 convention.
 9. **No dynamic allocation.** No `new`, no `malloc`, no `String`, no `std::vector`, anywhere in
    the added code. The heap on this board is 8 KB and shared with WiFiS3.
 10. **When `MADS_ENABLE_CURVE` is not defined, the produced binary must be byte-comparable to
@@ -82,6 +93,12 @@ Draw the seam at **one** place: the mechanism inside a session object.
 
   Target: **no more than 12 `#ifdef` blocks in the whole library.** If you find yourself writing
   the thirteenth, the seam is in the wrong place -- stop and reconsider.
+
+  *Status after Phase 3: 6 used* (monocypher wrapper, `entropy.hpp`, `entropy_ra4m1.cpp`, and
+  three in `entropy_desktop.cpp`). Six remain for Phases 4-6: the `curve.{hpp,cpp}` guard, the
+  `z85.{hpp,cpp}` guard, the `ZmtpSession` mechanism branch, and `Agent::set_crypto()` plus its
+  members. That is tight but sufficient if the seam stays where §2 puts it. If it is not
+  sufficient, that is the signal the seam has drifted -- not a reason to raise the budget.
 
 Breaking the public API is explicitly allowed (adoption is minimal). Prefer a clean API over a
 compatible one.
@@ -218,6 +235,13 @@ call must be there now, or Phase 5 will have nowhere to hook the MAC check.
 * `arduino-cli compile` of all three existing examples succeeds, and flash/RAM figures are within
   **±32 bytes** of the pre-refactor build. Record both numbers in the commit message. A larger
   delta means the refactor was not neutral -- find out why before continuing.
+
+  *Measured 2026-09-04 (arduino-cli 1.2.2, `arduino:renesas_uno@1.6.0`, ArduinoJson 7.4.3):*
+  `minimal_pub` +32/+8, `uno_r4_sensor` +32/+8, `pub_sub` **+48**/+8 flash/RAM bytes. RAM is
+  within budget everywhere (+8 = two `Transport &` references, as expected). `pub_sub` misses the
+  flash budget by 16 bytes, traced to the SUB-path call sites plus the mandatory
+  `fetch_settings()` trio conversion; accepted rather than reclaimed by member reordering. These
+  are the numbers Phase 7's disabled-build check compares against.
 * Desktop tests still pass, including the live broker test.
 
 ---
@@ -254,7 +278,8 @@ void hsalsa20(uint8_t out[32], const uint8_t in[16], const uint8_t key[32]);
 
 struct XSalsa20Keystream {          // XSalsa20 = HSalsa20 subkey + Salsa20 with the 8-byte tail
   void init(const uint8_t key[32], const uint8_t nonce[24]);
-  void seek_block(uint64_t block);  // block 0 = Poly1305 key material
+  void seek_block(uint64_t block);  // block 0: bytes 0-31 are the Poly1305 key,
+                                    // bytes 32-63 are ciphertext keystream (see §1 rule 8)
   void squeeze(uint8_t *out, size_t n);
   void xor_stream(const uint8_t *in, uint8_t *out, size_t n);
 };
@@ -280,7 +305,7 @@ struct SecretboxSeal {
   void init(const uint8_t key[32], const uint8_t nonce[24]);
   void absorb(const uint8_t *pt, size_t n);   // pass 1: keystream + Poly1305, ct discarded
   void tag(uint8_t out[16]);                  // finalise pass 1
-  void restart();                             // rewind keystream to block 1
+  void restart();                             // rewind keystream to byte 32 (see §1 rule 8)
   void encrypt(const uint8_t *pt, uint8_t *ct, size_t n);  // pass 2
 };
 
@@ -543,12 +568,16 @@ examples compile without it. `arduino_secrets.h` stays gitignored (it already is
 
 ### 7.1 Enabling the feature
 
-A `#define` in the `.ino` will not reach library translation units. Two supported mechanisms,
-both documented:
+A `#define` in the `.ino` will not reach library translation units. Two mechanisms:
 
-* `build_opt.h` in the sketch folder containing `-DMADS_ENABLE_CURVE` (IDE and CLI).
 * `arduino-cli compile --build-property "compiler.cpp.extra_flags=-DMADS_ENABLE_CURVE"`.
-  Note this *replaces* rather than appends to `compiler.cpp.extra_flags`; say so in the README.
+  **Verified working** with arduino-cli 1.2.2 and `arduino:renesas_uno@1.6.0`. Note it
+  *replaces* rather than appends to `compiler.cpp.extra_flags`; say so in the README.
+* `build_opt.h` in the sketch folder containing `-DMADS_ENABLE_CURVE`.
+  **Did not work** on that same arduino-cli 1.2.2 / core 1.6.0 combination -- the sketch never
+  saw the macro. Not tested across other versions, so this is a data point rather than proof it
+  never works. Phase 6 must re-check it on the actual target setup before documenting it as
+  supported, and must not ship `examples/crypto_pub/build_opt.h` as the only enable path.
 
 ### 7.2 Stack
 
@@ -701,8 +730,10 @@ Nonce prefix `"CurveZMQMESSAGEC"` board→broker, `"CurveZMQMESSAGES"` broker→
 
 ## Appendix C -- Pitfalls, ranked by how much time they will cost
 
-1. **Salsa20 block 0 is the Poly1305 key, block 1 starts the ciphertext.** Off-by-one-block here
-   produces a handshake that fails with no useful signal.
+1. **The Poly1305 key is keystream bytes 0-31; ciphertext starts at keystream byte 32**, inside
+   block 0, not at block 1. See §1 rule 8 -- including why the natural-sounding
+   "block 0 / block 1" phrasing is the ChaCha20-Poly1305 rule and wrong here. A 32-byte
+   misalignment produces a handshake that fails with no useful signal.
 2. **MESSAGE is an ordinary frame, not a command frame.** libzmq's `pull_and_encode()` never sets
    `msg_t::command`. Setting `0x04` on the outer frame makes the broker treat it as a handshake
    command and drop the connection.
