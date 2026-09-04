@@ -7,8 +7,13 @@
 # Usage: see README.md. Quick start:
 #   ARDUINOJSON_DIR=/path/to/ArduinoJson/src make test
 #
-# MADS_ENABLE_CURVE=1 builds the CURVE-guarded test binaries too (Phase 2+);
-# without it, only the always-built NULL-mechanism tests run.
+# test_crypto_vectors/test_entropy (Phase 2/3) always build with
+# MADS_ENABLE_CURVE themselves once their sources exist -- there is nothing
+# to test in them otherwise. MADS_ENABLE_CURVE=1 passed to `make` instead
+# additionally compiles test_toml_scan/test_zmtp_null (the NULL-mechanism
+# library tests) with -DMADS_ENABLE_CURVE, to catch anything in
+# mads_agent.cpp/zmtp_session.cpp that only compiles under one of the two
+# modes.
 
 CXX ?= g++
 STD := -std=c++17
@@ -101,14 +106,24 @@ $(CRYPTO_BIN): $(CRYPTO_SRCS)
 endif
 
 # ---------------------------------------------------------------------------
-# test_entropy -- Phase 3, guarded the same way.
+# test_entropy -- Phase 3, guarded the same way. Two binaries from the same
+# source: the real desktop backend (smoke test), and the deterministic test
+# hook (its determinism can only be shown by two separate process
+# invocations producing the same output -- see the `test` target below and
+# test_entropy.cpp's file comment).
 # ---------------------------------------------------------------------------
 ENTROPY_TEST_SRC := test_entropy.cpp
 ENTROPY_BIN := $(BUILD)/test_entropy
+ENTROPY_DETERM_BIN := $(BUILD)/test_entropy_deterministic
 HAVE_ENTROPY_TEST := $(wildcard $(ENTROPY_TEST_SRC))
 
 ifneq ($(HAVE_ENTROPY_TEST),)
 $(ENTROPY_BIN): test_entropy.cpp $(SRC_DIR)/entropy_desktop.cpp $(SRC_DIR)/entropy.hpp
+	$(CXX) $(CXXFLAGS) -DMADS_ENABLE_CURVE \
+	  -I$(SRC_DIR) test_entropy.cpp $(SRC_DIR)/entropy_desktop.cpp \
+	  -o $@ $(LDFLAGS)
+
+$(ENTROPY_DETERM_BIN): test_entropy.cpp $(SRC_DIR)/entropy_desktop.cpp $(SRC_DIR)/entropy.hpp
 	$(CXX) $(CXXFLAGS) -DMADS_ENABLE_CURVE -DMADS_CURVE_TEST_ENTROPY \
 	  -I$(SRC_DIR) test_entropy.cpp $(SRC_DIR)/entropy_desktop.cpp \
 	  -o $@ $(LDFLAGS)
@@ -119,7 +134,7 @@ endif
 # ---------------------------------------------------------------------------
 .PHONY: all test clean stackreport
 
-all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN))
+all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN))
 
 test: all
 	@echo "--- test_toml_scan ---"
@@ -131,8 +146,17 @@ ifneq ($(HAVE_CRYPTO_TEST),)
 	$(CRYPTO_BIN)
 endif
 ifneq ($(HAVE_ENTROPY_TEST),)
-	@echo "--- test_entropy ---"
+	@echo "--- test_entropy (desktop backend smoke test) ---"
 	$(ENTROPY_BIN)
+	@echo "--- test_entropy_deterministic (two independent process runs must match) ---"
+	$(ENTROPY_DETERM_BIN) > $(BUILD)/entropy_run1.hex
+	$(ENTROPY_DETERM_BIN) > $(BUILD)/entropy_run2.hex
+	@if diff -q $(BUILD)/entropy_run1.hex $(BUILD)/entropy_run2.hex >/dev/null; then \
+	  echo "test_entropy_deterministic: PASSED ($$(cat $(BUILD)/entropy_run1.hex))"; \
+	else \
+	  echo "test_entropy_deterministic: FAILED -- two runs produced different output"; \
+	  exit 1; \
+	fi
 endif
 
 # ---------------------------------------------------------------------------
