@@ -42,7 +42,17 @@ This builds and runs:
   `test_agent` -- it need not have its own `mads.ini` section),
   `MADS_PUB_TOPIC` (default `test_zmtp_null`). Run `mads echo --jsonl`
   against the same broker in another terminal to see the published messages
-  decode.
+  decode -- but note that `mads echo`'s stdout is block-buffered when it is
+  redirected to a file, so a run killed by a signal loses whatever is still
+  in the buffer and looks exactly like a broker that relayed nothing. Give
+  it a pty (`script -q /dev/null mads echo --jsonl`) when capturing to a
+  file.
+
+  The round trip is deliberately a publish/poll *loop*: a SUBSCRIBE takes
+  time to propagate through the broker's XPUB/XSUB relay (measured at
+  ~1.6-1.8 s against a local broker), and anything published before it
+  lands is dropped rather than queued -- ZMQ's "slow joiner". A single
+  publish followed by polling would fail almost every time.
 * `test_crypto_vectors` (once `src/mads/crypto/` exists, Phase 2 onward) and
   `test_entropy` (once `src/mads/entropy_desktop.cpp` exists, Phase 3
   onward) -- built and run automatically once their sources are present;

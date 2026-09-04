@@ -73,34 +73,62 @@ int main() {
   // Round-trip: also exercise the SUB/poll() path by subscribing to our own
   // topic and republishing a second message, matching the mads broker's
   // usual XSUB->XPUB relay of every PUB'd frame to interested SUBs.
-  if (!agent.subscribe(pub_topic)) {
-    std::fprintf(stderr, "test_zmtp_null: FAILED -- subscribe() returned "
-                         "false\n");
-    return 1;
-  }
+  //
+  // Two distinct subscribe() call sites are covered deliberately, because
+  // they are separate ZmtpSession::send_subscription() callers:
+  //
+  //   1. subscribe() *before* the SUB link exists. The topic is only
+  //      stored for replay, and the return value is false -- "remembered,
+  //      but nothing went on the wire". That is the documented contract
+  //      (see Agent::subscribe()), NOT a failure, so it must not be
+  //      asserted on. connect_sub() below replays the stored set, and
+  //      poll() receiving the message at the end of this test is what
+  //      proves the replay actually happened.
+  //   2. subscribe() *after* the link is up, which sends immediately and
+  //      must return true.
+  agent.subscribe(pub_topic);
+
   if (!agent.connect_sub(5000)) {
     std::fprintf(stderr, "test_zmtp_null: FAILED -- connect_sub() returned "
                          "false\n");
     return 1;
   }
 
-  JsonDocument doc2;
-  doc2["source"] = "test_zmtp_null";
-  doc2["value"] = 43;
-  if (!agent.publish(doc2)) {
-    std::fprintf(stderr, "test_zmtp_null: FAILED -- second publish() "
-                         "returned false\n");
+  // Case 2: a fresh topic on a live link -- stores *and* sends. Nothing
+  // publishes to it, so it only has to be accepted, not received.
+  if (!agent.subscribe("test_zmtp_null_live")) {
+    std::fprintf(stderr, "test_zmtp_null: FAILED -- subscribe() on a live "
+                         "link returned false\n");
     return 1;
   }
 
+  // ZMQ's "slow joiner": the SUBSCRIBE just sent has to propagate from our
+  // SUB socket through the broker's XPUB/XSUB relay before the broker will
+  // forward anything to us, and a message published inside that window is
+  // *dropped, not queued*. Publishing once and then polling therefore races
+  // the subscription and loses more often than not -- it is not a transport
+  // fault when it does. Republish on every iteration instead, so the poll
+  // only has to catch one message sent after the relay caught up.
   char topic_buf[64];
   uint8_t payload_buf[512];
   size_t payload_len = 0;
   bool got = false;
-  for (int i = 0; i < 25 && !got; ++i) { // up to ~5s at 200ms/poll
+  int published = 0;
+  for (int i = 0; i < 50 && !got; ++i) { // up to ~10s at 200ms/poll
+    JsonDocument doc2;
+    doc2["source"] = "test_zmtp_null";
+    doc2["value"] = 43;
+    if (!agent.publish(doc2)) {
+      std::fprintf(stderr, "test_zmtp_null: FAILED -- second publish() "
+                           "returned false (after %d ok)\n", published);
+      return 1;
+    }
+    ++published;
     got = agent.poll(topic_buf, sizeof(topic_buf), payload_buf,
                      sizeof(payload_buf), payload_len, 200);
   }
+  std::printf("test_zmtp_null: round-trip took %d publish/poll "
+              "iteration(s)\n", published);
   if (!got) {
     std::fprintf(stderr,
                  "test_zmtp_null: FAILED -- poll() never received the "
