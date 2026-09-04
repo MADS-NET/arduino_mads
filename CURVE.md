@@ -1,6 +1,7 @@
 # CURVE encryption on the UNO R4 WiFi -- feasibility study
 
-Status: **study only, no code**. This document is the result of reading the exact wire behaviour
+Status: **study only, no code**. The implementation plan derived from it is
+[CURVE_PLAN.md](CURVE_PLAN.md). This document is the result of reading the exact wire behaviour
 out of libzmq v4.3.5 (the version MADS pins in `vendors/CMakeLists.txt`) and out of the MADS
 broker's own CURVE/ZAP setup, and costing it against this library's measured footprint. It says
 what would have to be built, what it would cost, and where it can go wrong.
@@ -203,16 +204,31 @@ Baseline, measured and recorded in the README for `examples/uno_r4_sensor`: ~70 
 | CURVE state machine, Z85 decode, session plumbing | ~3 KB flash | Guessing |
 | **flash total** | **~10-13 KB → ~82 KB (31%)** | Guessing |
 | persistent CURVE state, 3 links + keys | ~300 B global RAM | Likely |
-| peak handshake stack (buffers + X25519 scratch) | ~1.2-1.5 KB | Guessing |
+| peak handshake stack if written naively (buffers + X25519 scratch) | ~1.2-1.5 KB | Guessing |
 | X25519 scalar mult @ 48 MHz | 40-125 ms | Guessing -- **measure** |
 | `begin()` handshake cost, 12 scalar mults | ~0.5-1.5 s | Guessing |
 | XSalsa20+Poly1305 on a 256-byte message | <0.2 ms | Likely |
 
-Flash and RAM are comfortable. The number that matters is the scalar multiplication: it lands
-entirely in `begin()` and in the reconnect path, which already blocks `loop()` on
-`WiFiClient::connect()`. Four extra scalar mults per reconnect attempt make an unreachable broker
-noticeably more expensive to keep retrying, so `set_reconnect_interval()`'s default may want
-revisiting under CURVE.
+Flash and global RAM are comfortable. Two numbers are not.
+
+**Stack.** [Certain] `variants/UNOWIFIR4/includes/ra_cfg/fsp_cfg/bsp/bsp_cfg.h` sets
+`BSP_CFG_STACK_MAIN_BYTES = 0x400` -- 1 KB of reserved main stack -- and `cores/arduino/main.cpp`
+runs `setup()`/`loop()` directly on it. It also disables the stack-pointer monitor
+(`R_MPU_SPMON->SP[0].CTL = 0`), so an overflow does not fault; it silently corrupts whatever lies
+below. In practice the usable stack is bounded by the gap to the top of the 8 KB heap rather than
+by the reserved 0x400, so more than 1 KB often works -- but nothing checks it and nothing warns.
+A handshake written with its buffers as ordinary locals would sit right on that boundary. The
+buffers must be file-static (inside the opt-in guard, so disabled builds pay nothing), and the
+result must be measured with `-fstack-usage`.
+
+This also settles the library choice on its own: TweetNaCl's `crypto_scalarmult` puts `i64 x[80]`
+(640 B) plus six 128-byte `gf` locals in a single frame -- roughly 1.4 KB -- which does not fit
+here at all. Monocypher is not merely the faster option, it is the one that fits.
+
+**Scalar multiplication time.** It lands entirely in `begin()` and in the reconnect path, which
+already blocks `loop()` on `WiFiClient::connect()`. Four extra scalar mults per reconnect attempt
+make an unreachable broker noticeably more expensive to keep retrying, so
+`set_reconnect_interval()`'s default may want revisiting under CURVE.
 
 ## 7. The blob publish path
 
