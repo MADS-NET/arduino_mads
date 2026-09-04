@@ -14,8 +14,8 @@ documentation.
 
 Two of the three acceptance criteria from Phases 0-3 are now **closed** (2026-09-04, on the
 repo owner's machine, against a live `mads broker` v2.4.3). The third needs a board and is still
-open. Phase 4 is unblocked as far as these go -- but read Sec 5's stack finding before building on
-plan Sec 7.2's budget.
+open. Phase 4 is unblocked as far as these go -- but read Sec 5 before building on plan Sec 7.2's
+512-byte `curve_handshake` budget, which is measurably too small and needs re-basing first.
 
 **1. `test_zmtp_null` against a real broker -- CLOSED, and it did fail on first contact.** The
 failure was in the *test*, not in the Phase 1 refactor, which is a good outcome: the refactor is
@@ -170,7 +170,7 @@ drops the unreferenced `crypto/*.cpp` object code entirely, and `monocypher_unit
 without the macro contains **0 symbols / 32 bytes** (ELF overhead only). These are the numbers
 plan §7.3's disabled-build check compares against.
 
-### Stack -- MEASURED on the board's toolchain 2026-09-04, and it is a Phase 4 blocker
+### Stack -- MEASURED on the board's toolchain 2026-09-04; re-base the budget, but not a blocker
 
 The suspicion recorded here was right, and the reality is worse. `stackreport` was under-reporting
 in four independent ways (all fixed in commit `1ed8056`; see that message for the mechanics) -- the
@@ -190,36 +190,48 @@ root-to-leaf chains:
 | `Mads::secretbox_open` | 688 |
 | `Mads::secretbox_seal` | 672 |
 
-Against a **1024-byte** main stack -- `BSP_CFG_STACK_MAIN_BYTES = 0x400`, confirmed in
-`variants/UNOWIFIR4/memory_regions.ld` and `bsp_cfg.h`, with the stack-pointer monitor disabled, so
-an overflow corrupts silently instead of faulting.
+Now the part that took a wrong turn on the first pass and is worth stating carefully, because the
+scary reading is the wrong one.
 
-**A single `box_beforenm()` is 864 B: 84% of the entire main stack, and 1.7x plan Sec 7.2's
-512-byte budget for the whole of `curve_handshake` -- before `curve_handshake`'s own frame, its
-HELLO/INITIATE/vouch buffers, or anything already on the stack underneath it in `loop()`.** These
-chains are sequential rather than nested, so the peak is roughly `max(864, 688, 672)` plus the
-frames above, but that leaves on the order of 150 bytes for everything else. Phase 4 cannot be
-built to the current budget, and the problem is the 1 KB stack rather than the budget number.
+`BSP_CFG_STACK_MAIN_BYTES = 0x400` is a **reserved floor, not a ceiling.** In
+`variants/UNOWIFIR4/fsp.ld` the heap and the stack grow toward each other from opposite ends of the
+same free region: `.heap` starts at `__HeapBase` (immediately after `.bss`) and grows up, the stack
+grows down from `__StackTop`, and `__HeapLimit == __StackLimit == __StackTop - 0x400` is only the
+guaranteed minimum gap. Linked symbols from a real `pub_sub` build:
 
-This needs a decision before Phase 4 starts; do not start writing `curve_handshake` against the
-512-byte figure. The options, none of them free:
+| symbol | address |
+|---|---|
+| `__HeapBase` = `__bss_end__` = `end` | `0x200022f0` |
+| `__HeapLimit` = `__StackLimit` | `0x20007b00` |
+| `__StackTop` | `0x20007f00` |
 
-1. **Raise `BSP_CFG_STACK_MAIN_BYTES`.** It lives in the *core's* variant files, not the sketch, so
-   a library cannot set it and every user would have to patch their core install. Almost certainly
-   unacceptable for a distributable library, but it is the only option that changes the ceiling.
-2. **Shrink X25519.** The 800 comes mostly from `scalarmult` (320) plus `fe_mul` (232) and
-   `invsqrt` (144). Monocypher has no smaller X25519 build knob, so this means a different
-   implementation, which reopens the Phase 2 primitive choice.
-3. **Move the handshake off `loop()`'s stack** -- run it early with a known-shallow caller, and/or
-   give the handshake static scratch instead of locals. This only helps with the frames *we* own;
-   the 800 bytes inside Monocypher cannot be relocated.
-4. **Re-base the budget honestly**: make `box_beforenm` its own line item at ~900 B and require
-   everything else in the handshake to fit the remainder. Cheapest to write down, and it is what
-   the plan should say regardless -- but the remainder is too small to be a real budget, so this
-   alone does not make Phase 4 safe.
+So the reserved stack is exactly 1024 B, but there are **22544 bytes** between `__HeapBase` and
+`__StackLimit` that the stack may grow into, and roughly 23.5 KB before it would reach `.bss`.
+Nothing faults at `__StackLimit`; the stack-pointer monitor is disabled.
 
-Whatever is chosen, Phase 8 should measure the real high-water mark on the board (paint the stack
-and look for the untouched watermark) rather than trusting any static sum, including this one.
+That makes the 864 B **not a hard blocker for Phase 4** -- there is ample physical room. Two things
+are nevertheless true and need acting on:
+
+1. **Plan Sec 7.2's 512-byte budget for `curve_handshake` is wrong by more than 1.7x** and has to
+   be re-based before anything is written against it. `box_beforenm` alone is 864 B, which is 84%
+   of the *reserved* region on its own. Re-base it as: `box_beforenm` ~900 B as its own line item,
+   everything else in the handshake budgeted separately, and state the total against the 22.5 KB
+   shared region rather than against 1 KB.
+2. **The real failure mode is a silent stack/heap collision, not a stack overflow.** The stack
+   spending 864 B is fine; the stack spending 864 B *while the heap has grown up to meet it* is
+   memory corruption with no fault and no symptom. ArduinoJson v7 heap-allocates every
+   `JsonDocument`, so this sketch does use the heap, and the margin is whatever is left of those
+   22.5 KB. That is a property of the whole sketch, not of `curve_handshake`, so it cannot be
+   settled statically.
+
+Phase 8 should therefore measure the actual high-water mark on the board -- paint the free region
+with a known pattern at boot, run a few handshakes, and look for where the pattern is still intact
+-- rather than trusting any static sum, this one included. That measurement is also the only thing
+that can confirm the heap side of the margin.
+
+Raising `BSP_CFG_STACK_MAIN_BYTES` is *not* the fix and was wrongly listed as an option here
+earlier: it lives in the core's variant files (so a library cannot set it), and since the limit is
+a floor rather than a ceiling, raising it would only take space away from the heap.
 
 For reference, the two Monocypher functions that would blow the stack instantly if anything ever
 pulled them in: `crypto_argon2` (2992 B chain) and `crypto_eddsa_check` (1720 B). Both are unused
