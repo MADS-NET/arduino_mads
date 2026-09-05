@@ -231,6 +231,128 @@ int main() {
                 err_name(Mads::curve_last_error()));
   }
 
+  // --- 5. Live MESSAGE traffic over CURVE (Phase 5) -----------------------
+  // A real publish and a real subscribe through the encrypted path, against
+  // the same broker. Mirrors what Agent::publish()/poll() put on the wire --
+  // [topic][12-byte MADS header][json] -- because Agent itself does not gain
+  // set_crypto() until Phase 6.
+  {
+    Mads::WifiTransport pub_t, sub_t;
+    Mads::ZmtpSession pub(pub_t), sub(sub_t);
+    bool ok = pub_t.connect(host, port_fe) && sub_t.connect(host, port_be);
+    check(ok, "connect PUB and SUB for message traffic");
+    if (ok) {
+      pub.set_curve_keys(&keys);
+      pub.reset();
+      sub.set_curve_keys(&keys);
+      sub.reset();
+      ok = pub.handshake("PUB", 5000) && sub.handshake("SUB", 5000);
+      check(ok, "both sessions handshake");
+    }
+    if (ok) {
+      const char *topic = "curve_probe";
+      const char *blob_topic = "curve_blob";
+      check(sub.send_subscription(topic, true),
+            "send_subscription over CURVE (encrypted [0x01][topic])");
+      check(sub.send_subscription(blob_topic, true),
+            "second subscription on a live CURVE link");
+
+      // "MADS" + version 1 + format 0 (Json) + compression 0 + flags + schema
+      const uint8_t hdr[12] = {'M', 'A', 'D', 'S', 1, 0, 0, 0, 0, 0, 0, 0};
+      const char *json = "{\"source\":\"curve_probe\",\"value\":99}";
+
+      // Slow joiner again: the SUBSCRIBE has to reach the broker's relay
+      // before anything comes back, so publish on every poll iteration.
+      char topic_buf[64];
+      uint8_t payload[512];
+      bool got = false;
+      int iterations = 0;
+      for (int i = 0; i < 60 && !got; ++i) {
+        ++iterations;
+        if (!(pub.send_frame(topic, true) &&
+              pub.send_frame(hdr, sizeof(hdr), true) &&
+              pub.send_frame(json, false))) {
+          check(false, "encrypted 3-frame publish");
+          break;
+        }
+        if (!sub_t.available())
+          continue;
+        uint8_t flags;
+        uint64_t len;
+        if (!sub.recv_frame_header(flags, len, 200) || len >= sizeof(topic_buf))
+          break;
+        if (!sub.recv_frame_body(reinterpret_cast<uint8_t *>(topic_buf),
+                                 sizeof(topic_buf), len, 200))
+          break;
+        topic_buf[len] = '\0';
+        uint8_t h[12];
+        if (!sub.recv_frame_header(flags, len, 200) || len != sizeof(h) ||
+            !sub.recv_frame_body(h, sizeof(h), len, 200))
+          break;
+        if (!sub.recv_frame_header(flags, len, 200) || len > sizeof(payload) ||
+            !sub.recv_frame_body(payload, sizeof(payload), len, 200))
+          break;
+        got = true;
+        check(std::strcmp(topic_buf, topic) == 0, "topic round-trips");
+        check(std::memcmp(h, hdr, sizeof(hdr)) == 0, "MADS header round-trips");
+        check(len == std::strlen(json) &&
+                  std::memcmp(payload, json, len) == 0,
+              "JSON payload round-trips");
+      }
+      check(got, "encrypted publish came back through the broker");
+      std::printf("  CURVE round-trip took %d publish/poll iteration(s)\n",
+                  iterations);
+
+      // A 1000-byte blob: the FLAG_LARGE path on the expanded length and the
+      // two-pass encrypt, taken all the way back through the broker rather
+      // than merely accepted locally. Checking this against `mads echo`
+      // instead would race the test's own disconnect, which is exactly how
+      // it was missed the first time.
+      static uint8_t blob[1000];
+      for (size_t i = 0; i < sizeof(blob); ++i)
+        blob[i] = static_cast<uint8_t>(i & 0xFF);
+      const char *meta = "{\"format\":\"raw\",\"source\":\"curve_probe\"}";
+      static uint8_t big_rx[2048];
+      bool blob_back = false;
+      for (int i = 0; i < 60 && !blob_back; ++i) {
+        if (!(pub.send_frame(blob_topic, true) && pub.send_frame(meta, true) &&
+              pub.send_frame(blob, sizeof(blob), false))) {
+          check(false, "1000-byte blob publish over CURVE");
+          break;
+        }
+        if (!sub_t.available())
+          continue;
+        uint8_t flags;
+        uint64_t len;
+        // Skip anything that is not the blob topic -- the JSON publisher
+        // above is not running any more, but its last frames may still be
+        // queued.
+        if (!sub.recv_frame_header(flags, len, 200) || len >= sizeof(topic_buf))
+          break;
+        if (!sub.recv_frame_body(reinterpret_cast<uint8_t *>(topic_buf),
+                                 sizeof(topic_buf), len, 200))
+          break;
+        topic_buf[len] = '\0';
+        if (!sub.recv_frame_header(flags, len, 200) ||
+            !sub.recv_frame_body(big_rx, sizeof(big_rx), len, 200))
+          break;
+        if (!sub.recv_frame_header(flags, len, 200) ||
+            !sub.recv_frame_body(big_rx, sizeof(big_rx), len, 200))
+          break;
+        if (std::strcmp(topic_buf, blob_topic) != 0)
+          continue; // a leftover JSON message; keep going
+        blob_back = true;
+        check(len == sizeof(blob), "blob length survives the round trip");
+        check(len == sizeof(blob) &&
+                  std::memcmp(big_rx, blob, sizeof(blob)) == 0,
+              "1000-byte blob round-trips byte-for-byte over CURVE");
+      }
+      check(blob_back, "blob came back through the broker (FLAG_LARGE path)");
+    }
+    pub_t.close();
+    sub_t.close();
+  }
+
   std::printf("test_curve_handshake: %d checks, %d failures\n", g_checks,
               g_failures);
   return g_failures ? 1 : 0;

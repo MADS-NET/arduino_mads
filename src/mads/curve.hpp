@@ -5,6 +5,7 @@
 // blocks).
 #ifdef MADS_ENABLE_CURVE
 
+#include "crypto/nacl_box.h"
 #include "transport.hpp"
 #include <cstddef>
 #include <cstdint>

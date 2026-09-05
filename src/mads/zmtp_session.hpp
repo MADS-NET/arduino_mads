@@ -81,6 +81,13 @@ public:
   static constexpr uint8_t FLAG_LARGE = 0x02;
   static constexpr uint8_t FLAG_COMMAND = 0x04;
 
+  /// Longest topic send_subscription() will accept. It assembles
+  /// [0x01][topic] into one buffer so the body can be encrypted as a unit
+  /// under CURVE, and that buffer has to be bounded somewhere. Comfortably
+  /// above Agent::SUB_TOPIC_CAP (24), which is the real limit in practice;
+  /// a longer topic fails the call rather than being silently truncated.
+  static constexpr size_t MAX_SUBSCRIPTION_TOPIC = 95;
+
   explicit ZmtpSession(Transport &t) : _t(t) {}
 
   /// Clears all per-connection protocol state. MUST be called before every
@@ -156,11 +163,14 @@ public:
    * forwarding to Transport::read(). (CURVE, when enabled, gives these
    * real bodies -- SecretboxOpen state -- and they move out of line then.)
    */
-  bool begin_recv_body(uint64_t /*len*/) { return true; }
-  int read_body_chunk(uint8_t *buf, size_t cap, uint32_t timeout_ms) {
-    return _t.read(buf, cap, timeout_ms);
+  bool begin_recv_body(uint64_t len) {
+    return curve_active() ? curve_begin_body(len) : true;
   }
-  bool end_recv_body() { return true; }
+  int read_body_chunk(uint8_t *buf, size_t cap, uint32_t timeout_ms) {
+    return curve_active() ? curve_read_chunk(buf, cap, timeout_ms)
+                          : _t.read(buf, cap, timeout_ms);
+  }
+  bool end_recv_body() { return curve_active() ? curve_end_body() : true; }
 
 private:
   // The greeting's mechanism field: 20 zero-padded octets at offset 12.
@@ -229,6 +239,17 @@ private:
   bool write_frame_header(uint64_t len, uint8_t flags);
   bool send_frame_raw(const uint8_t *data, size_t len, uint8_t flags);
 
+  // -------------------------------------------------------------------
+  // The mechanism seam (CURVE_PLAN.md Sec 2). Every CURVE-specific member
+  // is declared here and stubbed in the #else, so the rest of this class
+  // and all of zmtp_session.cpp can branch on plain `if (curve_active())`
+  // with no #ifdef of their own. Under NULL curve_active() is a constexpr
+  // false, so each of those branches folds away entirely and the stubs are
+  // never called or emitted -- which is what keeps the disabled build's
+  // codegen identical. Phase 5 added seven hooks here and needed *no* new
+  // guard block anywhere; if a future phase cannot manage that, Sec 2 says
+  // the seam has drifted.
+  // -------------------------------------------------------------------
 #ifdef MADS_ENABLE_CURVE
 public:
   /// Arms this session for CURVE. `k` must outlive the session and stay
@@ -240,11 +261,46 @@ public:
   const CurveState &curve_state() const { return _curve; }
 
 private:
-  void wipe_mechanism() { _curve.wipe(); }
+  bool curve_active() const { return _curve_keys != nullptr; }
+  void wipe_mechanism() {
+    _curve.wipe();
+    _rx_remaining = 0;
+    _rx_nonce_pending = 0;
+  }
+  // Defined in curve.cpp, inside that file's own guard, so they cost no
+  // further #ifdef here.
+  bool curve_do_handshake(const char *socket_type, uint32_t timeout_ms);
+  bool curve_send(const uint8_t *data, size_t len, uint8_t flags);
+  bool curve_recv_header(uint8_t &flags, uint64_t &len, uint32_t timeout_ms);
+  bool curve_recv_body(uint8_t *buf, size_t cap, uint64_t len,
+                       uint32_t timeout_ms);
+  bool curve_skip_body(uint64_t len, uint32_t timeout_ms);
+  bool curve_begin_body(uint64_t len);
+  int curve_read_chunk(uint8_t *buf, size_t cap, uint32_t timeout_ms);
+  bool curve_end_body();
+
   const CurveKeys *_curve_keys = nullptr;
   CurveState _curve{};
+  /// Receive state for the frame currently being read. `_rx` is per-session
+  /// rather than shared because a session can sit mid-frame between calls
+  /// (recv_frame_header now, body later), and the Agent has two sessions.
+  SecretboxOpen _rx;
+  uint64_t _rx_remaining = 0;
+  /// The nonce of the frame being read, committed to _curve.nonce_in only
+  /// once its tag verifies. Committing at header time would let a forged
+  /// frame ratchet the counter past legitimate ones.
+  uint64_t _rx_nonce_pending = 0;
 #else
+  static constexpr bool curve_active() { return false; }
   void wipe_mechanism() {}
+  bool curve_do_handshake(const char *, uint32_t) { return false; }
+  bool curve_send(const uint8_t *, size_t, uint8_t) { return false; }
+  bool curve_recv_header(uint8_t &, uint64_t &, uint32_t) { return false; }
+  bool curve_recv_body(uint8_t *, size_t, uint64_t, uint32_t) { return false; }
+  bool curve_skip_body(uint64_t, uint32_t) { return false; }
+  bool curve_begin_body(uint64_t) { return false; }
+  int curve_read_chunk(uint8_t *, size_t, uint32_t) { return -1; }
+  bool curve_end_body() { return false; }
 #endif
 
   Transport &_t;

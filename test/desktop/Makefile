@@ -195,11 +195,32 @@ $(CURVE_GOLD_BIN): $(CURVE_GOLD_SRCS) curve_golden.inc $(SRC_DIR)/crypto/monocyp
 endif
 
 # ---------------------------------------------------------------------------
+# test_curve_message -- Phase 5 MESSAGE framing, against the scripted peer in
+# mock_broker.h. No network, always runs.
+# ---------------------------------------------------------------------------
+CURVE_MSG_TEST_SRC := test_curve_message.cpp
+CURVE_MSG_BIN := $(BUILD)/test_curve_message
+HAVE_CURVE_MSG_TEST := $(wildcard $(CURVE_MSG_TEST_SRC))
+
+ifneq ($(HAVE_CURVE_MSG_TEST),)
+CURVE_MSG_SRCS := $(CURVE_MSG_TEST_SRC) $(SRC_DIR)/curve.cpp \
+                  $(SRC_DIR)/zmtp_session.cpp $(SRC_DIR)/entropy_desktop.cpp \
+                  $(SRC_DIR)/crypto/salsa20.cpp $(SRC_DIR)/crypto/nacl_box.cpp
+
+$(CURVE_MSG_BIN): $(CURVE_MSG_SRCS) mock_broker.h $(SRC_DIR)/crypto/monocypher_unit.c
+	$(CC) -std=c99 -Wall -O0 -g $(SAN) -DMADS_ENABLE_CURVE \
+	  -c $(SRC_DIR)/crypto/monocypher_unit.c -o $(BUILD)/monocypher_unit_msg.o
+	$(CXX) $(CXXFLAGS) -DMADS_ENABLE_CURVE -I$(SRC_DIR)/.. \
+	  -I$(SRC_DIR)/crypto $(CURVE_MSG_SRCS) \
+	  $(BUILD)/monocypher_unit_msg.o -o $@ $(LDFLAGS)
+endif
+
+# ---------------------------------------------------------------------------
 # Top-level targets
 # ---------------------------------------------------------------------------
 .PHONY: all test clean stackreport stackreport-arm
 
-all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN)) $(if $(HAVE_CURVE_HS_TEST),$(CURVE_HS_BIN)) $(if $(HAVE_CURVE_GOLD_TEST),$(CURVE_GOLD_BIN))
+all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN)) $(if $(HAVE_CURVE_HS_TEST),$(CURVE_HS_BIN)) $(if $(HAVE_CURVE_GOLD_TEST),$(CURVE_GOLD_BIN)) $(if $(HAVE_CURVE_MSG_TEST),$(CURVE_MSG_BIN))
 
 test: all
 	@echo "--- test_toml_scan ---"
@@ -209,6 +230,10 @@ test: all
 ifneq ($(HAVE_CRYPTO_TEST),)
 	@echo "--- test_crypto_vectors ---"
 	$(CRYPTO_BIN)
+endif
+ifneq ($(HAVE_CURVE_MSG_TEST),)
+	@echo "--- test_curve_message ---"
+	$(CURVE_MSG_BIN)
 endif
 ifneq ($(HAVE_CURVE_GOLD_TEST),)
 	@echo "--- test_curve_golden ---"

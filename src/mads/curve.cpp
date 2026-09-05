@@ -39,6 +39,16 @@ const char NONCE_READY[] = "CurveZMQREADY---";
 // 8-byte nonce prefixes (the trailing 16 bytes are random / peer-supplied).
 const char NONCE_WELCOME[] = "WELCOME-";
 const char NONCE_VOUCH[] = "VOUCH---";
+// MESSAGE nonce prefixes are directional (Appendix A.6): the two sides must
+// not share a keystream, so board->broker and broker->board differ in their
+// last byte.
+const char NONCE_MSG_OUT[] = "CurveZMQMESSAGEC"; // board -> broker
+const char NONCE_MSG_IN[] = "CurveZMQMESSAGES";  // broker -> board
+
+// "\x07MESSAGE"(8) + short nonce(8) + Poly1305 tag(16). The encrypted flags
+// byte that follows makes the flat overhead 33 (Appendix A.6).
+constexpr size_t MSG_PROLOGUE = 32;
+constexpr size_t MSG_OVERHEAD = MSG_PROLOGUE + 1;
 
 // ---------------------------------------------------------------------------
 // Working state. File-static rather than local, per Sec 7.2: these are the
@@ -54,6 +64,15 @@ uint8_t g_k_Spc[32];     // beforenm(S', c)   -- seals the vouch box
 uint8_t g_S_prime[32];   // S'  server transient public
 uint8_t g_cookie[96];
 uint8_t g_vouch_tail[16];
+
+/// The two-pass sealer for the blob path. File-static for the reason Sec 7.2
+/// gives for every other working buffer: as a local it was ~240 bytes of
+/// frame, and because the compiler unions both send paths into one frame,
+/// every small JSON publish paid for it too. Measured at 424 B of frame for
+/// curve_send() before this moved out, 56 B after. Safe as a single shared
+/// instance for the same reason g_scratch is: a send completes inside one
+/// call, and the library is single-threaded with one connection in flight.
+SecretboxSeal g_seal;
 
 CurveError g_err = CurveError::none;
 
@@ -277,6 +296,222 @@ bool curve_handshake(Transport &t, const CurveKeys &k, const char *socket_type,
   // Forward secrecy rests on c' being gone once the session key exists.
   wipe_transients();
   return true;
+}
+
+// ===========================================================================
+// MESSAGE framing (CURVE_PLAN.md Phase 5, Appendix A.6).
+//
+// These are ZmtpSession members, defined here rather than in
+// zmtp_session.cpp so that they sit inside this file's single
+// MADS_ENABLE_CURVE guard -- that is what let Phase 5 add the whole
+// mechanism without spending a new #ifdef block anywhere (Sec 2).
+//
+// A MESSAGE is an *ordinary* ZMTP frame: outer flags 0x00, or 0x02 when the
+// expanded body exceeds 255. The logical MORE/COMMAND bits travel encrypted,
+// as the first plaintext byte. Setting the command bit on the outer frame
+// would make the broker read it as a handshake command and drop us
+// (Appendix C pitfall 2).
+// ===========================================================================
+
+bool ZmtpSession::curve_do_handshake(const char *socket_type,
+                                     uint32_t timeout_ms) {
+  // The greeting is shared with the NULL path -- only its mechanism field
+  // differs, and minor=0 must stay identical for both.
+  if (!send_greeting("CURVE")) {
+    g_err = CurveError::greeting;
+    return false;
+  }
+  if (!recv_greeting("CURVE", timeout_ms)) {
+    // Almost always a broker not running --crypto at all: it offers NULL,
+    // we require CURVE, and the mechanism compare fails.
+    g_err = CurveError::greeting;
+    return false;
+  }
+  return curve_handshake(_t, *_curve_keys, socket_type, timeout_ms, _curve);
+}
+
+bool ZmtpSession::curve_send(const uint8_t *data, size_t len, uint8_t flags) {
+  if (!_curve.ready)
+    return false;
+
+  const uint64_t n = _curve.nonce_out;
+  uint8_t nonce[24];
+  short_nonce(nonce, NONCE_MSG_OUT, n);
+  // Only the two logical bits travel; LARGE is an outer-frame concern.
+  const uint8_t logical = flags & (FLAG_MORE | FLAG_COMMAND);
+  const size_t wire = len + MSG_OVERHEAD;
+
+  // Outer header carries flags 0: LARGE is decided on the *expanded* length,
+  // which zmtp_write_raw_header() does from `wire`. A 223-byte payload
+  // crosses 255 after expansion (Appendix C pitfall 5).
+  if (!zmtp_write_raw_header(_t, wire, 0))
+    return false;
+
+  if (wire <= SCRATCH_CAP) {
+    // One-shot path. The handshake is long finished by the time any MESSAGE
+    // is sent, so its scratch buffer is free -- reusing it is Sec 7.2's
+    // "one static scratch" rule rather than a second buffer. Covers every
+    // JSON publish (Agent::PUBLISH_BUF_CAP is 256) and every topic and
+    // header frame, halving the Salsa20 work on the common case.
+    uint8_t *o = g_scratch;
+    o[0] = 7;
+    memcpy(o + 1, "MESSAGE", 7);
+    put_u64_be(o + 8, n);
+    // Lay the plaintext where the ciphertext will land (out + 16) so the
+    // seal can work in place.
+    o[MSG_PROLOGUE] = logical;
+    if (len)
+      memcpy(o + MSG_PROLOGUE + 1, data, len);
+    secretbox_seal(o + 16, o + MSG_PROLOGUE, len + 1, nonce, _curve.precom);
+    ++_curve.nonce_out;
+    return _t.write(o, wire);
+  }
+
+  // Two-pass path, for the blob publish overload. The payload is never
+  // copied into a buffer of ours, so RAM does not scale with blob size --
+  // which is Phase 5's acceptance criterion. The one-shot branch above did
+  // not run, so g_scratch is free: the prologue and the chunk buffer are
+  // carved out of it rather than costing either stack or new .bss.
+  constexpr size_t CHUNK = 64;
+  uint8_t *head = g_scratch;
+  uint8_t *chunk = g_scratch + MSG_PROLOGUE;
+
+  g_seal.init(_curve.precom, nonce);
+  g_seal.absorb(&logical, 1);
+  g_seal.absorb(data, len);
+  head[0] = 7;
+  memcpy(head + 1, "MESSAGE", 7);
+  put_u64_be(head + 8, n);
+  g_seal.tag(head + 16);
+  if (!_t.write(head, MSG_PROLOGUE))
+    return false;
+
+  g_seal.restart();
+  uint8_t enc_flags;
+  g_seal.encrypt(&logical, &enc_flags, 1);
+  if (!_t.write(&enc_flags, 1))
+    return false;
+  size_t off = 0;
+  while (off < len) {
+    const size_t take = (len - off) < CHUNK ? (len - off) : CHUNK;
+    g_seal.encrypt(data + off, chunk, take);
+    if (!_t.write(chunk, take))
+      return false;
+    off += take;
+  }
+  ++_curve.nonce_out;
+  return true;
+}
+
+bool ZmtpSession::curve_recv_header(uint8_t &flags, uint64_t &len,
+                                    uint32_t timeout_ms) {
+  if (!_curve.ready)
+    return false;
+
+  uint8_t outer;
+  uint64_t wire;
+  if (!zmtp_read_raw_header(_t, outer, wire, timeout_ms))
+    return false;
+  if (outer & FLAG_COMMAND)
+    return false; // a command frame here is a protocol error post-handshake
+  if (wire < MSG_OVERHEAD)
+    return false;
+
+  uint8_t pro[MSG_PROLOGUE];
+  if (_t.read(pro, sizeof(pro), timeout_ms) != static_cast<int>(sizeof(pro)))
+    return false;
+  if (pro[0] != 7 || memcmp(pro + 1, "MESSAGE", 7) != 0)
+    return false;
+
+  const uint64_t n = get_u64_be(pro + 8);
+  // Strictly greater: equal is a replay, lower is a reorder. Either way the
+  // frame is refused (Sec 1 non-negotiable 4).
+  if (n <= _curve.nonce_in)
+    return false;
+  // Held, not committed: a forged frame must not be able to ratchet the
+  // counter past legitimate ones. curve_end_body() commits it once the tag
+  // verifies.
+  _rx_nonce_pending = n;
+
+  uint8_t nonce[24];
+  short_nonce(nonce, NONCE_MSG_IN, n);
+  _rx.init(_curve.precom, nonce, pro + 16);
+
+  // The flags byte is the first plaintext byte. Consuming it here is what
+  // lets every caller see a body of pure payload -- CURVE_PLAN.md Phase 5
+  // suggests giving poll()'s buffer a spare byte or memmoving the payload
+  // down by one, and neither is needed if the prologue absorbs it.
+  uint8_t fb;
+  if (_t.read(&fb, 1, timeout_ms) != 1)
+    return false;
+  _rx.update(&fb, &fb, 1);
+  flags = fb & (FLAG_MORE | FLAG_COMMAND);
+
+  len = wire - MSG_OVERHEAD;
+  _rx_remaining = len;
+  return true;
+}
+
+bool ZmtpSession::curve_end_body() {
+  // The MAC is the only thing that makes any of the plaintext already
+  // delivered trustworthy.
+  if (!_rx.finish())
+    return false;
+  _curve.nonce_in = _rx_nonce_pending;
+  return true;
+}
+
+bool ZmtpSession::curve_recv_body(uint8_t *buf, size_t cap, uint64_t len,
+                                  uint32_t timeout_ms) {
+  if (len > cap || len != _rx_remaining)
+    return false;
+  if (len) {
+    if (_t.read(buf, static_cast<size_t>(len), timeout_ms) !=
+        static_cast<int>(len))
+      return false;
+    _rx.update(buf, buf, static_cast<size_t>(len)); // decrypts in place
+  }
+  _rx_remaining = 0;
+  return curve_end_body();
+}
+
+bool ZmtpSession::curve_skip_body(uint64_t len, uint32_t timeout_ms) {
+  if (len != _rx_remaining)
+    return false;
+  uint8_t scratch[32];
+  while (len > 0) {
+    const size_t chunk =
+        len > sizeof(scratch) ? sizeof(scratch) : static_cast<size_t>(len);
+    if (_t.read(scratch, chunk, timeout_ms) != static_cast<int>(chunk))
+      return false;
+    // Authenticate, then throw the plaintext away. Discarding a frame does
+    // not exempt it from its MAC (Sec 1 non-negotiable 5) -- and getting
+    // this wrong has no symptom at all until someone attacks you.
+    _rx.update(scratch, scratch, chunk);
+    len -= chunk;
+  }
+  _rx_remaining = 0;
+  return curve_end_body();
+}
+
+bool ZmtpSession::curve_begin_body(uint64_t len) {
+  // _rx was already armed by curve_recv_header(); nothing to size up front.
+  return len == _rx_remaining;
+}
+
+int ZmtpSession::curve_read_chunk(uint8_t *buf, size_t cap,
+                                  uint32_t timeout_ms) {
+  if (_rx_remaining == 0)
+    return 0;
+  size_t want = cap;
+  if (want > _rx_remaining)
+    want = static_cast<size_t>(_rx_remaining);
+  const int got = _t.read(buf, want, timeout_ms);
+  if (got <= 0)
+    return got;
+  _rx.update(buf, buf, static_cast<size_t>(got));
+  _rx_remaining -= static_cast<uint64_t>(got);
+  return got;
 }
 
 } // namespace Mads

@@ -9,6 +9,8 @@ bool ZmtpSession::write_frame_header(uint64_t len, uint8_t flags) {
 
 bool ZmtpSession::send_frame_raw(const uint8_t *data, size_t len,
                                   uint8_t flags) {
+  if (curve_active())
+    return curve_send(data, len, flags);
   if (!write_frame_header(len, flags))
     return false;
   if (len == 0)
@@ -27,13 +29,17 @@ bool ZmtpSession::send_frame(const char *text, bool more) {
 
 bool ZmtpSession::recv_frame_header(uint8_t &flags, uint64_t &len,
                                      uint32_t timeout_ms) {
-  // Phase 5 gives this a CURVE branch that consumes the MESSAGE prologue and
-  // reports the plaintext length; today both mechanisms read the raw header.
+  // Under CURVE this consumes the MESSAGE prologue and reports the plaintext
+  // length, so callers never see the 33-byte expansion.
+  if (curve_active())
+    return curve_recv_header(flags, len, timeout_ms);
   return zmtp_read_raw_header(_t, flags, len, timeout_ms);
 }
 
 bool ZmtpSession::recv_frame_body(uint8_t *buf, size_t buf_cap, uint64_t len,
                                    uint32_t timeout_ms) {
+  if (curve_active())
+    return curve_recv_body(buf, buf_cap, len, timeout_ms);
   if (len > buf_cap)
     return false;
   if (len == 0)
@@ -43,6 +49,10 @@ bool ZmtpSession::recv_frame_body(uint8_t *buf, size_t buf_cap, uint64_t len,
 }
 
 bool ZmtpSession::skip_frame_body(uint64_t len, uint32_t timeout_ms) {
+  // Under CURVE this still authenticates: discarding the plaintext does not
+  // exempt a frame from its MAC (Sec 1 non-negotiable 5).
+  if (curve_active())
+    return curve_skip_body(len, timeout_ms);
   uint8_t scratch[32];
   while (len > 0) {
     size_t chunk =
@@ -99,24 +109,11 @@ bool ZmtpSession::recv_ready(uint32_t timeout_ms) {
 }
 
 bool ZmtpSession::handshake(const char *socket_type, uint32_t timeout_ms) {
-#ifdef MADS_ENABLE_CURVE
-  // The one mechanism branch in the library (CURVE_PLAN.md Sec 2). The
-  // greeting is shared: only its mechanism field differs, and `minor = 0`
-  // has to stay identical for both, so it is not duplicated into curve.cpp.
-  if (_curve_keys) {
-    if (!send_greeting("CURVE")) {
-      curve_note_error(CurveError::greeting);
-      return false;
-    }
-    if (!recv_greeting("CURVE", timeout_ms)) {
-      // Almost always a broker that is not running --crypto at all: it
-      // offers NULL, we require CURVE, and the mechanism compare fails.
-      curve_note_error(CurveError::greeting);
-      return false;
-    }
-    return curve_handshake(_t, *_curve_keys, socket_type, timeout_ms, _curve);
-  }
-#endif
+  // The mechanism branch (CURVE_PLAN.md Sec 2). Under NULL curve_active() is
+  // a constexpr false and this whole arm folds away; see the seam block in
+  // the header for why it needs no #ifdef here.
+  if (curve_active())
+    return curve_do_handshake(socket_type, timeout_ms);
   if (!send_greeting("NULL"))
     return false;
   if (!recv_greeting("NULL", timeout_ms))
@@ -129,15 +126,20 @@ bool ZmtpSession::handshake(const char *socket_type, uint32_t timeout_ms) {
 }
 
 bool ZmtpSession::send_subscription(const char *topic, bool subscribe) {
-  size_t topic_len = strlen(topic);
-  uint8_t prefix = subscribe ? 0x01 : 0x00;
-  if (!write_frame_header(topic_len + 1, 0))
+  // The body is [0x01|0x00][topic], which is exactly what the broker's
+  // downgraded (minor=0) decoder expects to find -- under CURVE it expects
+  // to find it *inside the ciphertext*, so this has to be assembled and
+  // handed to send_frame_raw() rather than written straight to the
+  // transport as it used to be. CURVE_PLAN.md Phase 5 says subscriptions
+  // need no special handling, which is true of their content and not of
+  // their framing.
+  const size_t topic_len = strlen(topic);
+  uint8_t body[1 + MAX_SUBSCRIPTION_TOPIC];
+  if (topic_len + 1 > sizeof(body))
     return false;
-  if (!_t.write(&prefix, 1))
-    return false;
-  if (topic_len == 0)
-    return true;
-  return _t.write(reinterpret_cast<const uint8_t *>(topic), topic_len);
+  body[0] = subscribe ? 0x01 : 0x00;
+  memcpy(body + 1, topic, topic_len);
+  return send_frame_raw(body, topic_len + 1, 0);
 }
 
 } // namespace Mads
