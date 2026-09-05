@@ -309,7 +309,15 @@ misreading it matters.
 `agent.last_curve_error()` is the diagnostic; print it when `begin()` fails.
 `examples/crypto_pub` prints a plain-language explanation for each value.
 
-**A note on reconnect behaviour.** If the broker refuses the key, retrying is
+**Reconnection.** The PUB link is rebuilt every 60 s regardless of how
+healthy it looks, because on this board a dead one is undetectable: after a
+broker restart the WiFi module goes on reporting the socket as connected and
+accepting writes, so `publish()` returns true while nothing is delivered.
+Rebuilding on a timer is the only reliable defence; a PUB socket holds no
+unacknowledged state, so it costs nothing but one handshake per minute.
+`set_pub_refresh_interval(0)` disables it if you have a reason to.
+
+**A note on failed-handshake retries.** If the broker refuses the key, retrying is
 pointless until a human fixes it, so the interval backs off exponentially to
 one attempt a minute (`curve_backoff()` reports it). Ordinary "broker not up
 yet" failures are cheap and keep retrying at the normal interval.
@@ -328,7 +336,8 @@ Verified end to end on real hardware — an UNO R4 WiFi against an unmodified
 
 * settings fetch, including per-agent section parsing;
 * publishing, decoded correctly by `mads echo`;
-* reconnection, by stopping and restarting the broker under a running board;
+* reconnection, by stopping and restarting the broker under a running board
+  -- which is how the silent-PUB-failure bug above was found and fixed;
 * **encrypted** operation against `mads broker --crypto`: the broker logs
   `granted` for the board's connections, and 562 messages were published in
   164 s with one failure (the one before WiFi came up);

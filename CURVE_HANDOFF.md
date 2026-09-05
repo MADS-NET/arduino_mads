@@ -39,9 +39,27 @@ encrypted REQ, and publishes MESSAGE frames the broker decrypts.
 | cost above the sketch's `delay(200)` | ~62 ms for publish + `analogRead` + Serial at 115200 |
 | handshake rejections / backoff events | 0 |
 
-Still open in Phase 8: step 2's watermark **with the real agent running** (the earlier 1612-1668 B
-was the crypto alone, on a sketch that barely touches the heap), step 4's broker restart mid-run,
-and step 5's `nonce_out == 3` check on the board rather than on the desktop.
+**Steps 4 and 5 closed 2026-09-05, and step 4 found a real bug.** Restarting the broker under a
+running board showed the board publishing happily into a socket that delivered nothing:
+`transport.connected()` reported yes on every check across 150 s, every `publish()` returned true,
+746 messages went out and none arrived. `WiFiClient::connected()` asks the ESP32 for the socket
+state and the ESP32 believes it is established; a PUB socket gets no reply traffic, so there is
+nothing to time out on. Fixed by rebuilding the PUB link on a timer (default 60 s, commit
+`e62f61d`) -- see `Agent::set_pub_refresh_interval()`. Not CURVE-specific: it is the plain PUB
+path, so unencrypted users were affected too.
+
+Step 5 is confirmed on hardware by watching `nonce_out` across a scheduled rebuild:
+
+```
+732 777 822 867 | 15 60 105 ... 825 870 | 18 63 108 ...
+```
+
+Each drop is a fresh handshake leaving the counter at 3, plus the publishes made before the next
+sample -- so the session really is renegotiated rather than carried across, which is the property
+that makes nonce reuse impossible. 493 publishes, 0 failures: the rebuilds are seamless.
+
+Still open in Phase 8: only step 2's watermark **with the real agent running** (the earlier
+1612-1668 B was the crypto alone, on a sketch that barely touches the heap).
 
 **Two hardware lessons that cost real time.**
 
