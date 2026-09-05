@@ -25,6 +25,34 @@ static void check(bool ok, const char *what) {
   }
 }
 
+/// Counts Transport::write() calls. On the UNO R4 WiFi each one is an SPI
+/// round-trip to the ESP32 measured at ~9.3 ms, so the call count -- not the
+/// byte count -- is what sets publish latency. Asserting on it keeps the
+/// coalescing in curve_send() from being undone by a later refactor that
+/// looks harmless because the wire bytes do not change.
+class WriteCounter : public Mads::Transport {
+public:
+  explicit WriteCounter(MockBroker &m) : _m(m) {}
+  int writes = 0;
+  size_t bytes = 0;
+
+  bool connect(const char *h, uint16_t p) override { return _m.connect(h, p); }
+  bool connected() override { return _m.connected(); }
+  void close() override { _m.close(); }
+  bool available() override { return _m.available(); }
+  int read(uint8_t *b, size_t n, uint32_t t) override {
+    return _m.read(b, n, t);
+  }
+  bool write(const uint8_t *d, size_t n) override {
+    ++writes;
+    bytes += n;
+    return _m.write(d, n);
+  }
+
+private:
+  MockBroker &_m;
+};
+
 /// Wraps MockBroker and records how deep the stack got inside write(),
 /// which is called from the middle of the two-pass encrypt loop. Comparing
 /// that depth across blob sizes is a direct test of Phase 5's acceptance
@@ -327,6 +355,42 @@ int main() {
       if (b != 0xEE)
         untouched = false;
     check(untouched, "a refused key leaves the output buffer untouched");
+  }
+
+  // --- 9. A small frame leaves in ONE write -------------------------------
+  {
+    MockBroker mock;
+    WriteCounter wc(mock);
+    Mads::CurveKeys keys;
+    Mads::ZmtpSession s(wc);
+    check(mock_arm(mock, s, keys), "arm through the write counter");
+
+    wc.writes = 0;
+    uint8_t small[100];
+    std::memset(small, 0x5E, sizeof(small));
+    check(s.send_frame(small, sizeof(small), false), "send a small frame");
+    std::printf("  small frame (100 B payload): %d write(s)\n", wc.writes);
+    check(wc.writes == 1,
+          "small frame is header+body in a single write, not two");
+
+    // A three-frame publish -- topic, MADS header, payload -- is what
+    // Agent::publish() emits, and is the shape whose latency matters.
+    wc.writes = 0;
+    s.send_frame("topic", true);
+    uint8_t hdr[12] = {'M', 'A', 'D', 'S', 1, 0, 0, 0, 0, 0, 0, 0};
+    s.send_frame(hdr, sizeof(hdr), true);
+    s.send_frame(small, sizeof(small), false);
+    std::printf("  three-frame publish:         %d write(s)\n", wc.writes);
+    check(wc.writes == 3, "a three-frame publish is 3 writes, not 6");
+
+    // The two-pass path streams and cannot coalesce, so it is expected to
+    // use more -- this pins that it is not accidentally taking the one-shot
+    // path and silently buffering a blob.
+    wc.writes = 0;
+    std::vector<uint8_t> blob(2000, 0x11);
+    check(s.send_frame(blob.data(), blob.size(), false), "send a 2 KB blob");
+    std::printf("  2 KB blob (two-pass):        %d write(s)\n", wc.writes);
+    check(wc.writes > 3, "the blob path streams rather than buffering");
   }
 
   std::printf("test_curve_message: %d checks, %d failures\n", g_checks,

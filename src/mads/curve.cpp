@@ -386,7 +386,14 @@ bool ZmtpSession::curve_send(const uint8_t *data, size_t len, uint8_t flags) {
   // which is Phase 5's acceptance criterion. The one-shot branch above did
   // not run, so g_scratch is free: the prologue and the chunk buffer are
   // carved out of it rather than costing either stack or new .bss.
-  constexpr size_t CHUNK = 64;
+  // CURVE_PLAN.md Phase 5 suggests 64-byte chunks. That was written before
+  // anyone had measured a write: at ~9.3 ms per SPI round-trip to the ESP32,
+  // 64 bytes means a 16 KB blob costs 256 writes and about 2.4 s. The chunk
+  // is a fixed slice of the existing static scratch, so enlarging it does
+  // not make RAM scale with blob size -- which is the property Phase 5's
+  // acceptance criterion actually protects -- and it cuts the write count
+  // fourfold. 256 is what fits after the prologue.
+  constexpr size_t CHUNK = 256;
   uint8_t *head = g_scratch + ZMTP_HDR_MAX;
   uint8_t *chunk = head + MSG_PROLOGUE;
 
