@@ -115,7 +115,11 @@ void loop() {
         Serial.print(SECRET_WIFI_SSID);
         Serial.println("\"");
       }
-      delay(2000);
+      // Back off hard between attempts. Re-entering WiFi.begin() every
+      // couple of seconds is itself capable of leaving the ESP32
+      // unresponsive -- which looks exactly like a wedged board, and was
+      // mistaken for one more than once.
+      delay(10000);
       return;
     }
     g_ready = true;

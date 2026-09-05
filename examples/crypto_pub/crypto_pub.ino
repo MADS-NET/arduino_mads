@@ -92,21 +92,56 @@ static const uint8_t LED_SLOT_MS = 250;
 // the Arduino builder hoists auto-generated prototypes above everything in
 // the .ino, so a function returning a type declared here fails to compile.
 static const uint8_t LED_NO_WIFI = 0;
-static const uint8_t LED_WIFI_ONLY = 1;
-static const uint8_t LED_BROKER_PLAIN = 2;
-static const uint8_t LED_BROKER_CURVE = 3;
-static const uint8_t LED_CURVE_REJECTED = 4;
+static const uint8_t LED_SSID_MISSING = 1;
+static const uint8_t LED_WIFI_ONLY = 2;
+static const uint8_t LED_BROKER_PLAIN = 3;
+static const uint8_t LED_BROKER_CURVE = 4;
+static const uint8_t LED_CURVE_REJECTED = 5;
 static const uint8_t LED_PATTERN[] = {
-  0b10000000, // no WiFi
-  0b11111111, // WiFi, no broker
-  0b11110000, // broker, unencrypted
-  0b11011000, // broker, encrypted
-  0b10101010, // CURVE rejected, backing off
+  0b10000000, // joining WiFi -- one blink
+  0b10100000, // configured SSID not on the air -- two blinks
+  0b11111111, // WiFi up, broker not joined -- solid
+  0b11110000, // broker joined, unencrypted -- one long pulse
+  0b11011000, // broker joined, encrypted -- two pulses
+  0b10101010, // CURVE rejected, backing off -- flutter
 };
 
+// Is the configured SSID actually being broadcast? Worth distinguishing,
+// because "cannot see the network" and "cannot join the network" have
+// completely different fixes, and from a failed join alone they look
+// identical. A phone hotspot that has gone to sleep is the common case.
+//
+// The scan blocks for a second or two, so it runs at most every 15 s and
+// only while disconnected -- the LED pauses during it, which is acceptable
+// when the alternative is not knowing why the board is offline.
+static bool g_ssid_seen = true;
+static uint32_t g_last_scan = 0;
+
+static void refresh_ssid_seen() {
+  if (g_last_scan != 0 && millis() - g_last_scan < 15000)
+    return;
+  g_last_scan = millis();
+  const int n = WiFi.scanNetworks();
+  g_ssid_seen = false;
+  for (int i = 0; i < n; ++i) {
+    if (strcmp(WiFi.SSID(i), SECRET_WIFI_SSID) == 0) {
+      g_ssid_seen = true;
+      break;
+    }
+  }
+  Serial.print("  scan: ");
+  Serial.print(n);
+  Serial.print(" networks, \"");
+  Serial.print(SECRET_WIFI_SSID);
+  Serial.println(g_ssid_seen ? "\" present" : "\" NOT on the air");
+}
+
 static uint8_t led_state() {
-  if (WiFi.status() != WL_CONNECTED)
-    return LED_NO_WIFI;
+  if (WiFi.status() != WL_CONNECTED) {
+    refresh_ssid_seen();
+    return g_ssid_seen ? LED_NO_WIFI : LED_SSID_MISSING;
+  }
+  g_last_scan = 0; // rescan promptly next time the link drops
 #ifdef MADS_ENABLE_CURVE
   // Backed off past the base interval means handshakes are being refused --
   // deterministic, and it will not fix itself without someone adding this

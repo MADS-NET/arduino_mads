@@ -344,12 +344,12 @@ bool Agent::publish(const char *json, size_t json_len, const char *topic) {
   // 3-part header form is the only way to interoperate as plain JSON.
   uint8_t header[12] = {'M', 'A', 'D', 'S', 1, 0, 0, 0, 0, 0, 0, 0};
 
-  bool sent =
-      _pub_session.send_frame(reinterpret_cast<const uint8_t *>(use_topic),
-                              strlen(use_topic), true) &&
-      _pub_session.send_frame(header, sizeof(header), true) &&
-      _pub_session.send_frame(reinterpret_cast<const uint8_t *>(json),
-                              json_len, false);
+  // One call, so the mechanism can put all three frames in a single
+  // transport write where it can -- see ZmtpSession::send_frames3(). Under
+  // NULL this is the same three sends it always was.
+  bool sent = _pub_session.send_frames3(
+      reinterpret_cast<const uint8_t *>(use_topic), strlen(use_topic), header,
+      sizeof(header), reinterpret_cast<const uint8_t *>(json), json_len);
 
   if (!sent) {
     // Drop the socket so the next call goes through the reconnect path

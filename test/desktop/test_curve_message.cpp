@@ -374,14 +374,45 @@ int main() {
           "small frame is header+body in a single write, not two");
 
     // A three-frame publish -- topic, MADS header, payload -- is what
-    // Agent::publish() emits, and is the shape whose latency matters.
+    // Agent::publish() emits, and is the shape whose latency matters. Sent
+    // one frame at a time it is three writes; batched, one.
+    uint8_t hdr[12] = {'M', 'A', 'D', 'S', 1, 0, 0, 0, 0, 0, 0, 0};
     wc.writes = 0;
     s.send_frame("topic", true);
-    uint8_t hdr[12] = {'M', 'A', 'D', 'S', 1, 0, 0, 0, 0, 0, 0, 0};
     s.send_frame(hdr, sizeof(hdr), true);
     s.send_frame(small, sizeof(small), false);
-    std::printf("  three-frame publish:         %d write(s)\n", wc.writes);
-    check(wc.writes == 3, "a three-frame publish is 3 writes, not 6");
+    std::printf("  3 frames, sent separately:   %d write(s)\n", wc.writes);
+    check(wc.writes == 3, "three separate frames are three writes");
+
+    wc.writes = 0;
+    check(s.send_frames3(reinterpret_cast<const uint8_t *>("topic"), 5, hdr,
+                         sizeof(hdr), small, sizeof(small)),
+          "batched three-frame publish");
+    std::printf("  3 frames, batched:           %d write(s)\n", wc.writes);
+    check(wc.writes == 1, "a batched publish is ONE write");
+
+    // The batch must still be readable as three ordinary frames by the peer.
+    size_t off = 0;
+    uint8_t f;
+    std::vector<uint8_t> pl;
+    uint64_t nn;
+    bool lg;
+    int decoded = 0;
+    while (off < mock.rx_raw.size() &&
+           mock.decode_message(off, f, pl, nn, lg))
+      ++decoded;
+    // One small frame, then three sent separately, then three batched.
+    check(decoded == 7,
+          "all seven frames decode -- batching changed no bytes");
+
+    // Oversized payloads must fall back rather than silently truncate.
+    wc.writes = 0;
+    std::vector<uint8_t> huge(400, 0x77);
+    check(s.send_frames3(reinterpret_cast<const uint8_t *>("topic"), 5, hdr,
+                         sizeof(hdr), huge.data(), huge.size()),
+          "oversized batch still sends");
+    std::printf("  3 frames, too big to batch:  %d write(s)\n", wc.writes);
+    check(wc.writes > 1, "an oversized batch falls back to separate writes");
 
     // The two-pass path streams and cannot coalesce, so it is expected to
     // use more -- this pins that it is not accidentally taking the one-shot

@@ -36,7 +36,15 @@ constexpr size_t SCRATCH_CAP = INITIATE_PROLOGUE + 16 + 128 + METADATA_CAP;
 // leave as one Transport::write(). On this board a write is an SPI
 // round-trip to the ESP32 costing ~9 ms, so halving the number of writes
 // halves publish latency -- the bytes themselves are almost free.
-constexpr size_t SCRATCH_TOTAL = ZMTP_HDR_MAX + SCRATCH_CAP;
+// A batched publish holds three whole frames at once: topic, the 12-byte
+// MADS header, and a JSON payload of up to Agent::PUBLISH_BUF_CAP. Each
+// costs MSG_OVERHEAD plus its outer header, so the worst case is roughly
+// (64+42) + (12+35) + (256+42). 512 covers it with room to spare, and the
+// buffer is still one static shared with the handshake, which is long over
+// by the time any MESSAGE is sent.
+constexpr size_t SCRATCH_TOTAL = 512;
+static_assert(SCRATCH_TOTAL >= ZMTP_HDR_MAX + SCRATCH_CAP,
+              "scratch must still hold the largest handshake frame");
 
 // 16-byte nonce prefixes (the trailing 8 bytes are the big-endian counter).
 const char NONCE_HELLO[] = "CurveZMQHELLO---";
@@ -533,6 +541,50 @@ int ZmtpSession::curve_read_chunk(uint8_t *buf, size_t cap,
   _rx.update(buf, buf, static_cast<size_t>(got));
   _rx_remaining -= static_cast<uint64_t>(got);
   return got;
+}
+
+bool ZmtpSession::curve_send3(const uint8_t *a, size_t alen, const uint8_t *b,
+                              size_t blen, const uint8_t *c, size_t clen) {
+  if (!_curve.ready)
+    return false;
+
+  const uint8_t *data[3] = {a, b, c};
+  const size_t lens[3] = {alen, blen, clen};
+  // MORE on the first two, clear on the last: the logical flags travel
+  // encrypted, as the first plaintext byte of each frame.
+  const uint8_t logical[3] = {FLAG_MORE, FLAG_MORE, 0};
+
+  // Size the whole batch before touching anything. Returning false here
+  // must leave the nonce counter untouched, so the caller's fallback to
+  // three separate sends is clean rather than skipping nonces.
+  size_t need = 0;
+  for (int i = 0; i < 3; ++i) {
+    const size_t wire = lens[i] + MSG_OVERHEAD;
+    need += (wire > 255 ? 9u : 2u) + wire;
+  }
+  if (need > SCRATCH_TOTAL)
+    return false;
+
+  size_t off = 0;
+  for (int i = 0; i < 3; ++i) {
+    const size_t wire = lens[i] + MSG_OVERHEAD;
+    off += zmtp_encode_raw_header(g_scratch + off, wire, 0);
+    uint8_t *o = g_scratch + off;
+
+    const uint64_t n = _curve.nonce_out++;
+    uint8_t nonce[24];
+    short_nonce(nonce, NONCE_MSG_OUT, n);
+    o[0] = 7;
+    memcpy(o + 1, "MESSAGE", 7);
+    put_u64_be(o + 8, n);
+    o[MSG_PROLOGUE] = logical[i];
+    if (lens[i])
+      memcpy(o + MSG_PROLOGUE + 1, data[i], lens[i]);
+    secretbox_seal(o + 16, o + MSG_PROLOGUE, lens[i] + 1, nonce,
+                   _curve.precom);
+    off += wire;
+  }
+  return _t.write(g_scratch, off);
 }
 
 } // namespace Mads

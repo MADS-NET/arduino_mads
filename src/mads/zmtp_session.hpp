@@ -124,6 +124,28 @@ public:
   bool send_frame(const char *text, bool more);
 
   /**
+   * Sends three frames as one message -- the [topic][header][payload] shape
+   * every Agent::publish() emits.
+   *
+   * Under CURVE this encrypts all three into one buffer and issues a single
+   * Transport::write(). That matters far more than it looks: on the UNO R4
+   * WiFi a write is an SPI round-trip to the ESP32 measured at ~9.3 ms, so a
+   * publish's cost is set by how many writes it makes, not how many bytes.
+   * Three frames sent individually are three writes; batched, one.
+   *
+   * Under NULL, and under CURVE whenever the batch would not fit the static
+   * buffer, this falls back to three ordinary send_frame() calls -- which is
+   * exactly what it did before, so the disabled build is unaffected.
+   */
+  bool send_frames3(const uint8_t *a, size_t alen, const uint8_t *b,
+                    size_t blen, const uint8_t *c, size_t clen) {
+    if (curve_active() && curve_send3(a, alen, b, blen, c, clen))
+      return true;
+    return send_frame(a, alen, true) && send_frame(b, blen, true) &&
+           send_frame(c, clen, false);
+  }
+
+  /**
    * Sends a SUB subscription/unsubscription registration: an ordinary frame
    * `[0x01|0x00][topic bytes]`, per the legacy (minor=0) encoding pinned by
    * handshake(). Must be called after a successful SUB handshake.
@@ -275,6 +297,11 @@ private:
   // further #ifdef here.
   bool curve_do_handshake(const char *socket_type, uint32_t timeout_ms);
   bool curve_send(const uint8_t *data, size_t len, uint8_t flags);
+  /// Encrypts three frames into one buffer and writes them together.
+  /// Returns false without consuming a nonce if they would not fit, so the
+  /// caller can fall back cleanly.
+  bool curve_send3(const uint8_t *a, size_t alen, const uint8_t *b,
+                   size_t blen, const uint8_t *c, size_t clen);
   bool curve_recv_header(uint8_t &flags, uint64_t &len, uint32_t timeout_ms);
   bool curve_recv_body(uint8_t *buf, size_t cap, uint64_t len,
                        uint32_t timeout_ms);
@@ -299,6 +326,8 @@ private:
   void wipe_mechanism() {}
   bool curve_do_handshake(const char *, uint32_t) { return false; }
   bool curve_send(const uint8_t *, size_t, uint8_t) { return false; }
+  bool curve_send3(const uint8_t *, size_t, const uint8_t *, size_t,
+                   const uint8_t *, size_t) { return false; }
   bool curve_recv_header(uint8_t &, uint64_t &, uint32_t) { return false; }
   bool curve_recv_body(uint8_t *, size_t, uint64_t, uint32_t) { return false; }
   bool curve_skip_body(uint64_t, uint32_t) { return false; }
