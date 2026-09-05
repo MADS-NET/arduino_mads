@@ -16,6 +16,51 @@ documentation.
 owner's machine, against a live `mads broker` v2.4.3 and a real UNO R4 WiFi), and **Phase 4 is
 done and verified on the wire** (2026-09-05).
 
+### Phase 8 status -- steps 1, 3 and 4 done on hardware 2026-09-05
+
+**CURVE runs end to end on a real UNO R4 WiFi against a real `mads broker --crypto`.** The
+broker's own ZAP log is the evidence:
+
+```
+ZAP: granted CURVE from 172.20.10.10
+[2026-09-05 14:08:01] Sending settings to agent uno_r4 (v2.4.0)
+ZAP: granted CURVE from 172.20.10.10
+```
+
+Two grants from the board -- the settings REQ and the PUB link -- and `mads echo --crypto` decodes
+the published frames with live analog readings. So the whole chain is proven on hardware: RA4M1
+draws its transient key from the SCE TRNG, completes the handshake, fetches `mads.ini` over the
+encrypted REQ, and publishes MESSAGE frames the broker decrypts.
+
+| measurement | value |
+|---|---|
+| publishes | **562 in 164 s, 1 failure** (the one before WiFi came up) |
+| sustained rate | **3.82 Hz**, median loop 262 ms |
+| cost above the sketch's `delay(200)` | ~62 ms for publish + `analogRead` + Serial at 115200 |
+| handshake rejections / backoff events | 0 |
+
+Still open in Phase 8: step 2's watermark **with the real agent running** (the earlier 1612-1668 B
+was the crypto alone, on a sketch that barely touches the heap), step 4's broker restart mid-run,
+and step 5's `nonce_out == 3` check on the board rather than on the desktop.
+
+**Two hardware lessons that cost real time.**
+
+*The board wedges into a state only a power cycle clears.* USB stays enumerated, CDC goes silent,
+and `bossac` cannot reach the bootloader -- because the 1200 bps touch is serviced by the running
+sketch's USB stack, and on this board the ESP32-S3 owns both WiFi and USB. Pressing RESET is not
+enough; the cable has to come out. CMSIS-DAP cannot substitute either: the UNO R4 WiFi only wires
+its debug interface to the RA4M1 when the DEBUG jumper is shorted, so `openocd` fails with
+`CMSIS-DAP command CMD_INFO failed`. Seen twice, under two different sketches -- once from the
+stack-painting race fixed in `c662581`, and once while spinning on failed TCP connects. It has not
+recurred since the board could actually reach the broker.
+
+*A network that "works" can still be unusable.* The first attempt used a venue WiFi where the board
+joined fine and got DHCP, but nothing reached the broker: ARP resolved and ICMP did not, i.e.
+client isolation, which is normal on guest networks. The symptom at the sketch is
+`begin()` failing with `CurveError::none` -- CURVE never ran, because the TCP connect never
+completed. A phone hotspot was the fix. If a board joins WiFi but every publish fails with
+`CurveError::none`, suspect the network before the code.
+
 ### Phase 6 status -- done 2026-09-05
 
 `Agent::set_crypto()` arms every connection the agent opens, including the settings REQ, so there
