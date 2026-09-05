@@ -3,3 +3,4 @@ build/
 *.o
 .DS_Store
 arduino_secrets.h
+.footprint_build/
