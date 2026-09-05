@@ -1,5 +1,25 @@
 # CURVE encryption on the UNO R4 WiFi -- feasibility study
 
+> **Implemented, 2026-09-05.** This document is the original feasibility
+> study and is kept as the reasoning record, not as documentation of what
+> was built. CURVE now works and is verified on hardware against a real
+> `mads broker --crypto` — see [README.md](README.md) to use it and
+> [DEVELOPER.md](DEVELOPER.md) for internals and measurements.
+>
+> What the study got right: the wire layout, the choice of Monocypher over
+> TweetNaCl (whose `crypto_scalarmult` frame would not have fitted), and the
+> judgement that the flash and RAM cost was affordable.
+>
+> What it got wrong, all corrected in [CURVE_PLAN.md](CURVE_PLAN.md):
+> the RAM estimate was about 5x low (~1.9 KB actual, not ~300 B) and flash
+> about 5 KB low; the 1 KB "main stack" turned out to be a guaranteed floor
+> rather than a ceiling, with ~20 KB actually available; and the performance
+> question was framed around the cost of the crypto, which is negligible —
+> publish latency is set almost entirely by how many times the sketch writes
+> to the WiFi module.
+
+
+
 Status: **study only, no code**. The implementation plan derived from it is
 [CURVE_PLAN.md](CURVE_PLAN.md). This document is the result of reading the exact wire behaviour
 out of libzmq v4.3.5 (the version MADS pins in `vendors/CMakeLists.txt`) and out of the MADS
