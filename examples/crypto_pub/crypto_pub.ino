@@ -122,6 +122,18 @@ static void refresh_ssid_seen() {
     return;
   g_last_scan = millis();
   const int n = WiFi.scanNetworks();
+
+  // A scan taken right after a failed join attempt reports zero networks --
+  // an artifact of the attempt still in flight, not an empty airwave. Any
+  // real environment has *some* APs in range, so treat an empty result as
+  // "don't know" and keep showing the ordinary joining pattern. Reporting
+  // "not on the air" here would be a confident lie, and diagnosing a dead
+  // radio from exactly this reading already cost an afternoon once.
+  if (n <= 0) {
+    Serial.println("  scan: inconclusive (0 networks -- too soon after a join)");
+    return;
+  }
+
   g_ssid_seen = false;
   for (int i = 0; i < n; ++i) {
     if (strcmp(WiFi.SSID(i), SECRET_WIFI_SSID) == 0) {

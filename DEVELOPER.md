@@ -265,7 +265,10 @@ off to ~10 s between join attempts. This is the most likely cause of the
 **`WiFi.scanNetworks()` right after a failed join returns 0.** It is an
 artifact of the attempt in flight, *not* a dead radio. Diagnosing a dead
 radio this way sent us chasing a hardware fault that did not exist; scan from
-a clean state, or check `WiFi.firmwareVersion()` first.
+a clean state, or check `WiFi.firmwareVersion()` first. Any code that acts on
+a scan while disconnected must treat an empty result as **inconclusive** --
+`crypto_pub` does, because the first version of its "SSID not on the air"
+LED state reported a confident false negative for exactly this reason.
 
 **A phone hotspot goes to sleep.** iOS stops broadcasting the AP once a
 laptop is attached and no WiFi client is using it. The board then cannot see
