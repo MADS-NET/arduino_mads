@@ -16,6 +16,35 @@ documentation.
 owner's machine, against a live `mads broker` v2.4.3 and a real UNO R4 WiFi), and **Phase 4 is
 done and verified on the wire** (2026-09-05).
 
+### Phase 6 status -- done 2026-09-05
+
+`Agent::set_crypto()` arms every connection the agent opens, including the settings REQ, so there
+is no unencrypted bootstrap. Verified end to end against a real `--crypto` broker: `begin()`
+fetches settings over CURVE and `publish()` works. `examples/crypto_pub` builds and the three
+CURVE-free examples are byte-unchanged.
+
+| quantity | value |
+|---|---|
+| Sec 2 guard budget | **12 of 12** -- exactly the four items Sec 2 named |
+| backoff on rejection | 40, 80, 160, 320 ms, saturating; reset by any success |
+| `crypto_pub` flash / RAM | 68844 -> **87140** (+17.9 KB), 8744 -> **10472** (+1728) |
+| the three other examples | unchanged at 68952 / 70024 / 70144 |
+
+Things to know:
+
+* **A bad client key has two distinct failure modes and they need different fixes.** A consistent
+  keypair the broker does not know -> ZAP denies it, broker replies ERROR -> `CurveError::rejected`
+  (copy the `.pub` over and **restart** the broker). A public and secret that are not a pair, i.e.
+  one line mistyped -> the vouch box cannot be opened, the broker drops the connection before
+  authentication and logs **no ZAP entry at all** -> `CurveError::disconnected` (re-copy both
+  lines). The example prints distinct guidance for each.
+* **`build_opt.h` cannot work on this core** -- not "did not work on one version". `renesas_uno`
+  1.6.0's `platform.txt` never references `{build.opt.path}`, so nothing reads the file. Use
+  `--build-property "build.extra_flags=-DMADS_ENABLE_CURVE"`, which the core substitutes into both
+  the C and C++ recipes. A C++-only flag now fails at link, because Monocypher is C.
+* `set_crypto()` is defined inline in the header, deliberately: out of line it would have needed a
+  thirteenth guard block.
+
 ### Phase 5 status -- done 2026-09-05
 
 MESSAGE framing (Appendix A.6) is implemented and verified both in-process against a scripted peer
