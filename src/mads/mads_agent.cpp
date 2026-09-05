@@ -31,10 +31,13 @@ bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
   if (!_pub_transport.connect(_broker_host, _frontend_port))
     return false;
   _pub_session.reset();
+  arm_session(_pub_session);
   if (!_pub_session.handshake("PUB", timeout_ms)) {
     _pub_transport.close();
+    note_handshake_failure();
     return false;
   }
+  note_handshake_success();
   return true;
 }
 
@@ -85,7 +88,10 @@ bool Agent::ensure_pub_link() {
   // very first call, where a zero _last_pub_attempt would otherwise be
   // indistinguishable from "just tried" during the first interval after boot.
   uint32_t now = millis();
-  if (_pub_attempted && (now - _last_pub_attempt) < _reconnect_interval_ms)
+  // retry_interval() is reconnect_interval() until a CURVE handshake is
+  // *rejected*, which is deterministic, costs ~180 ms of X25519 per attempt,
+  // and never self-heals -- see Agent::curve_backoff().
+  if (_pub_attempted && (now - _last_pub_attempt) < retry_interval())
     return false;
   _pub_attempted = true;
   _last_pub_attempt = now;
@@ -97,13 +103,18 @@ bool Agent::ensure_pub_link() {
   // valid settings we don't know the real frontend port yet.
   if (!_settings_ok && !fetch_settings(_timeout_ms))
     return false;
+  // A failed connect is the cheap, self-healing "broker not up yet" case and
+  // deliberately does not touch the backoff.
   if (!_pub_transport.connect(_broker_host, _frontend_port))
     return false;
   _pub_session.reset();
+  arm_session(_pub_session);
   if (!_pub_session.handshake("PUB", _timeout_ms)) {
     _pub_transport.close();
+    note_handshake_failure();
     return false;
   }
+  note_handshake_success();
   return true;
 }
 
@@ -114,7 +125,7 @@ bool Agent::ensure_sub_link() {
     return false;
 
   uint32_t now = millis();
-  if (_sub_attempted && (now - _last_sub_attempt) < _reconnect_interval_ms)
+  if (_sub_attempted && (now - _last_sub_attempt) < retry_interval())
     return false;
   _sub_attempted = true;
   _last_sub_attempt = now;
@@ -127,8 +138,10 @@ bool Agent::ensure_sub_link() {
   if (!_sub_transport.connect(_broker_host, _backend_port))
     return false;
   _sub_session.reset();
+  arm_session(_sub_session);
   if (!_sub_session.handshake("SUB", _timeout_ms)) {
     _sub_transport.close();
+    note_handshake_failure();
     return false;
   }
 
@@ -141,6 +154,7 @@ bool Agent::ensure_sub_link() {
     }
   }
   _last_sub_rx = millis();
+  note_handshake_success();
   return true;
 }
 
@@ -156,10 +170,16 @@ bool Agent::fetch_settings(uint32_t timeout_ms) {
     return false;
   ZmtpSession session(settings_transport);
   session.reset();
+  // The settings ROUTER gets CURVE too (broker.cpp binds all three sockets
+  // with it), so there is no unencrypted bootstrap: begin() cannot read
+  // mads.ini at all until a handshake has completed.
+  arm_session(session);
   if (!session.handshake("REQ", timeout_ms)) {
     settings_transport.close();
+    note_handshake_failure();
     return false;
   }
+  note_handshake_success();
 
   // Wire content of a REQ send is actually [""(empty delimiter)][...],
   // invisible at the zmqpp/desktop-Agent level but required at this raw
@@ -270,10 +290,13 @@ bool Agent::connect_sub(uint32_t timeout_ms) {
   if (!_sub_transport.connect(_broker_host, _backend_port))
     return false;
   _sub_session.reset();
+  arm_session(_sub_session);
   if (!_sub_session.handshake("SUB", timeout_ms)) {
     _sub_transport.close();
+    note_handshake_failure();
     return false;
   }
+  note_handshake_success();
   for (size_t i = 0; i < _sub_topic_count; ++i) {
     if (!_sub_session.send_subscription(_sub_topics[i], true)) {
       _sub_transport.close();

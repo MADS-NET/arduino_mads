@@ -8,6 +8,7 @@
 #include "mock_broker.h"
 
 #include "curve.hpp"
+#include "z85.hpp"
 #include "zmtp_session.hpp"
 
 #include <cstdio>
@@ -262,6 +263,70 @@ int main() {
                 depth[0], depth[1]);
     check(depth[0] == depth[1],
           "stack depth identical for 1 KB and 16 KB blobs");
+  }
+
+  // --- 8. Z85 decoding (Phase 6) ------------------------------------------
+  // Strictness is the point: the failure this guards against is a key
+  // pasted wrong into arduino_secrets.h, which would otherwise become a
+  // handshake that fails for no visible reason.
+  {
+    uint8_t out[32];
+    // The all-zero key: 32 zero bytes encode as forty '0' characters.
+    const char *zeros = "0000000000000000000000000000000000000000";
+    check(Mads::z85_decode(zeros, out), "40 valid characters decode");
+    bool all_zero = true;
+    for (uint8_t b : out)
+      if (b != 0)
+        all_zero = false;
+    check(all_zero, "all-'0' input decodes to 32 zero bytes");
+
+    // The RFC 32 vector: "HelloWorld" is the Z85 form of the 8 bytes
+    // 86 4F D2 6F B5 59 F7 5B. Checked through the 40-character path by
+    // padding with zero blocks, which pins the alphabet's value order --
+    // an alphabet with two characters transposed would still pass every
+    // length and rejection test above.
+    const char *hello = "HelloWorld000000000000000000000000000000";
+    const uint8_t expect[8] = {0x86, 0x4F, 0xD2, 0x6F, 0xB5, 0x59, 0xF7, 0x5B};
+    check(Mads::z85_decode(hello, out), "RFC 32 vector decodes");
+    check(std::memcmp(out, expect, sizeof(expect)) == 0,
+          "RFC 32 vector: \"HelloWorld\" -> 864FD26FB559F75B");
+
+    check(!Mads::z85_decode("0000000000000000000000000000000000000", out),
+          "37 characters refused");
+    check(!Mads::z85_decode("00000000000000000000000000000000000000000", out),
+          "41 characters refused");
+    check(!Mads::z85_decode("", out), "empty string refused");
+    check(!Mads::z85_decode(nullptr, out), "nullptr refused");
+
+    char bad[41];
+    std::memcpy(bad, zeros, 41);
+    bad[17] = ' ';
+    check(!Mads::z85_decode(bad, out), "space refused");
+    bad[17] = '\'';
+    check(!Mads::z85_decode(bad, out), "quote refused");
+    bad[17] = '\\';
+    check(!Mads::z85_decode(bad, out), "backslash refused");
+
+    // 85^5 - 1 > 2^32 - 1, so a group of all-'#' (value 84) is in-alphabet
+    // and still not a valid 32-bit word. Catching this is why the decoder
+    // accumulates in 64 bits and range-checks.
+    char overflow[41];
+    std::memcpy(overflow, zeros, 41);
+    for (int i = 0; i < 5; ++i)
+      overflow[i] = '#';
+    check(!Mads::z85_decode(overflow, out),
+          "in-alphabet group that overflows 32 bits refused");
+
+    // A decoder that writes before validating would corrupt the caller's
+    // key on a bad input.
+    uint8_t canary[32];
+    std::memset(canary, 0xEE, sizeof(canary));
+    Mads::z85_decode(bad, canary);
+    bool untouched = true;
+    for (uint8_t b : canary)
+      if (b != 0xEE)
+        untouched = false;
+    check(untouched, "a refused key leaves the output buffer untouched");
   }
 
   std::printf("test_curve_message: %d checks, %d failures\n", g_checks,

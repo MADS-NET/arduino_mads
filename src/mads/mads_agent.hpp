@@ -1,6 +1,7 @@
 #pragma once
 #include "toml_scan.hpp"
 #include "wifi_transport.hpp"
+#include "z85.hpp"
 #include "zmtp_session.hpp"
 #include <ArduinoJson.h>
 #include <cstddef>
@@ -167,8 +168,69 @@ public:
    * so a persistently unreachable broker doesn't turn loop() into a busy
    * retry spin.
    */
-  void set_reconnect_interval(uint32_t ms) { _reconnect_interval_ms = ms; }
+  void set_reconnect_interval(uint32_t ms) {
+    _reconnect_interval_ms = ms;
+    reset_curve_backoff();
+  }
   uint32_t reconnect_interval() const { return _reconnect_interval_ms; }
+
+#ifdef MADS_ENABLE_CURVE
+  /**
+   * Arms CURVE for every connection this agent opens. Call before begin().
+   * The three arguments are the 40-character Z85 lines written by
+   * `mads --keypair=<name>`: the client's own .pub and .key, and the
+   * broker's .pub.
+   *
+   * Returns false if any of them fails to decode, in which case nothing is
+   * armed and the agent stays on the NULL mechanism -- so a mistyped key
+   * fails here, loudly and at once, instead of turning into a handshake
+   * that mysteriously never completes.
+   *
+   * The keys are copied into this object, so the caller's strings need not
+   * outlive the call; the copy is what the reconnect path re-uses.
+   */
+  bool set_crypto(const char *client_public_z85, const char *client_secret_z85,
+                  const char *broker_public_z85) {
+    // Decode into a temporary first: a half-armed agent -- valid client key,
+    // mistyped broker key -- would be worse than a cleanly refused one.
+    CurveKeys k{};
+    if (!z85_decode(client_public_z85, k.client_public) ||
+        !z85_decode(client_secret_z85, k.client_secret) ||
+        !z85_decode(broker_public_z85, k.server_public))
+      return false;
+    _curve_keys = k;
+    _curve_ready = true;
+    reset_curve_backoff();
+    return true;
+  }
+
+  /// True once set_crypto() has succeeded.
+  bool crypto_enabled() const { return _curve_ready; }
+
+  /// Why the last CURVE handshake failed. The only diagnostic a sketch gets,
+  /// and worth printing: CurveError::rejected means this board's .pub is not
+  /// in the broker's keys directory, or the broker was not restarted after
+  /// it was added there.
+  CurveError last_curve_error() const { return curve_last_error(); }
+
+  /**
+   * Current retry interval for a *rejected* handshake, in ms.
+   *
+   * A rejected handshake is deterministic -- it will not fix itself without
+   * someone touching the broker -- and each attempt costs four X25519
+   * scalar multiplications, measured at ~180 ms of blocking compute on the
+   * board. So that case alone backs off exponentially from
+   * reconnect_interval() to curve_backoff_max(), instead of burning that
+   * every second forever. A failed TCP connect does *not* back off: that is
+   * the "broker not up yet" case, it is cheap, and it self-heals.
+   *
+   * Exposed so a sketch can say why it has gone quiet -- a board that has
+   * silently slowed to one attempt a minute should be able to report it.
+   */
+  uint32_t curve_backoff() const { return _curve_backoff_ms; }
+  uint32_t curve_backoff_max() const { return _curve_backoff_max_ms; }
+  void set_curve_backoff_max(uint32_t ms) { _curve_backoff_max_ms = ms; }
+#endif
 
   /**
    * Optional SUB liveness watchdog: if more than `ms` elapse with no
@@ -251,6 +313,44 @@ private:
   bool _settings_ok = false;
   bool _want_sub = false;
   TomlScan _settings_scan;
+
+  // -------------------------------------------------------------------
+  // CURVE state, declared here and stubbed in the #else so mads_agent.cpp
+  // needs no #ifdef of its own -- the same seam pattern ZmtpSession uses.
+  // Under NULL every hook below is an empty inline and every branch folds
+  // away.
+  // -------------------------------------------------------------------
+#ifdef MADS_ENABLE_CURVE
+  /// Arms both sessions from the decoded keys. Called on every link setup,
+  /// because a session that has been reset() has also forgotten them.
+  void arm_session(ZmtpSession &s) {
+    if (_curve_ready)
+      s.set_curve_keys(&_curve_keys);
+  }
+  /// Grows the retry interval, but only for the rejected case.
+  void note_handshake_failure() {
+    if (!_curve_ready || curve_last_error() != CurveError::rejected)
+      return;
+    const uint32_t doubled = _curve_backoff_ms * 2;
+    _curve_backoff_ms = (doubled > _curve_backoff_max_ms || doubled < _curve_backoff_ms)
+                            ? _curve_backoff_max_ms
+                            : doubled;
+  }
+  void note_handshake_success() { reset_curve_backoff(); }
+  void reset_curve_backoff() { _curve_backoff_ms = _reconnect_interval_ms; }
+  uint32_t retry_interval() const { return _curve_backoff_ms; }
+
+  CurveKeys _curve_keys{};
+  bool _curve_ready = false;
+  uint32_t _curve_backoff_ms = 1000;
+  uint32_t _curve_backoff_max_ms = 60000;
+#else
+  void arm_session(ZmtpSession &) {}
+  void note_handshake_failure() {}
+  void note_handshake_success() {}
+  void reset_curve_backoff() {}
+  uint32_t retry_interval() const { return _reconnect_interval_ms; }
+#endif
 
   uint32_t _reconnect_interval_ms = 1000;
   uint32_t _sub_silence_ms = 0;

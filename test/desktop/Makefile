@@ -79,7 +79,7 @@ ZMTP_BIN  := $(BUILD)/test_zmtp_null
 # -- otherwise the enabled build fails at link rather than at compile, which
 # is a confusing way to find out. Monocypher is C and needs its own step.
 ifdef MADS_ENABLE_CURVE
-ZMTP_EXTRA_SRCS := $(SRC_DIR)/curve.cpp $(SRC_DIR)/crypto/salsa20.cpp \
+ZMTP_EXTRA_SRCS := $(SRC_DIR)/curve.cpp $(SRC_DIR)/z85.cpp $(SRC_DIR)/crypto/salsa20.cpp \
                    $(SRC_DIR)/crypto/nacl_box.cpp $(SRC_DIR)/entropy_desktop.cpp
 ZMTP_EXTRA_OBJS := $(BUILD)/monocypher_unit_zmtp.o
 else
@@ -159,7 +159,7 @@ HAVE_CURVE_HS_TEST := $(wildcard $(CURVE_HS_TEST_SRC))
 
 ifneq ($(HAVE_CURVE_HS_TEST),)
 CURVE_HS_SRCS := $(CURVE_HS_TEST_SRC) $(SRC_DIR)/curve.cpp \
-                 $(SRC_DIR)/zmtp_session.cpp $(SRC_DIR)/entropy_desktop.cpp \
+                 $(SRC_DIR)/z85.cpp $(SRC_DIR)/zmtp_session.cpp $(SRC_DIR)/entropy_desktop.cpp \
                  $(SRC_DIR)/crypto/salsa20.cpp $(SRC_DIR)/crypto/nacl_box.cpp \
                  $(STUB_DIR)/WiFiS3.cpp
 
@@ -183,7 +183,7 @@ HAVE_CURVE_GOLD_TEST := $(wildcard $(CURVE_GOLD_TEST_SRC))
 
 ifneq ($(HAVE_CURVE_GOLD_TEST),)
 CURVE_GOLD_SRCS := $(CURVE_GOLD_TEST_SRC) $(SRC_DIR)/curve.cpp \
-                   $(SRC_DIR)/zmtp_session.cpp $(SRC_DIR)/entropy_desktop.cpp \
+                   $(SRC_DIR)/z85.cpp $(SRC_DIR)/zmtp_session.cpp $(SRC_DIR)/entropy_desktop.cpp \
                    $(SRC_DIR)/crypto/salsa20.cpp $(SRC_DIR)/crypto/nacl_box.cpp
 
 $(CURVE_GOLD_BIN): $(CURVE_GOLD_SRCS) curve_golden.inc $(SRC_DIR)/crypto/monocypher_unit.c
@@ -204,7 +204,7 @@ HAVE_CURVE_MSG_TEST := $(wildcard $(CURVE_MSG_TEST_SRC))
 
 ifneq ($(HAVE_CURVE_MSG_TEST),)
 CURVE_MSG_SRCS := $(CURVE_MSG_TEST_SRC) $(SRC_DIR)/curve.cpp \
-                  $(SRC_DIR)/zmtp_session.cpp $(SRC_DIR)/entropy_desktop.cpp \
+                  $(SRC_DIR)/z85.cpp $(SRC_DIR)/zmtp_session.cpp $(SRC_DIR)/entropy_desktop.cpp \
                   $(SRC_DIR)/crypto/salsa20.cpp $(SRC_DIR)/crypto/nacl_box.cpp
 
 $(CURVE_MSG_BIN): $(CURVE_MSG_SRCS) mock_broker.h $(SRC_DIR)/crypto/monocypher_unit.c
@@ -216,11 +216,35 @@ $(CURVE_MSG_BIN): $(CURVE_MSG_SRCS) mock_broker.h $(SRC_DIR)/crypto/monocypher_u
 endif
 
 # ---------------------------------------------------------------------------
+# test_curve_agent -- Phase 6: the Agent-level API and the rejected-handshake
+# backoff. Live; skips cleanly without a broker and keys.
+# ---------------------------------------------------------------------------
+CURVE_AGENT_TEST_SRC := test_curve_agent.cpp
+CURVE_AGENT_BIN := $(BUILD)/test_curve_agent
+HAVE_CURVE_AGENT_TEST := $(wildcard $(CURVE_AGENT_TEST_SRC))
+
+ifneq ($(HAVE_CURVE_AGENT_TEST),)
+CURVE_AGENT_SRCS := $(CURVE_AGENT_TEST_SRC) $(SRC_DIR)/mads_agent.cpp \
+                    $(SRC_DIR)/toml_scan.cpp $(SRC_DIR)/zmtp_session.cpp \
+                    $(SRC_DIR)/curve.cpp $(SRC_DIR)/z85.cpp \
+                    $(SRC_DIR)/entropy_desktop.cpp \
+                    $(SRC_DIR)/crypto/salsa20.cpp \
+                    $(SRC_DIR)/crypto/nacl_box.cpp $(STUB_DIR)/WiFiS3.cpp
+
+$(CURVE_AGENT_BIN): $(CURVE_AGENT_SRCS) $(SRC_DIR)/crypto/monocypher_unit.c
+	$(CC) -std=c99 -Wall -O0 -g $(SAN) -DMADS_ENABLE_CURVE \
+	  -c $(SRC_DIR)/crypto/monocypher_unit.c -o $(BUILD)/monocypher_unit_ag.o
+	$(CXX) $(CXXFLAGS) -DMADS_ENABLE_CURVE -I$(SRC_DIR)/.. \
+	  -I$(SRC_DIR)/crypto $(CURVE_AGENT_SRCS) \
+	  $(BUILD)/monocypher_unit_ag.o -o $@ $(LDFLAGS)
+endif
+
+# ---------------------------------------------------------------------------
 # Top-level targets
 # ---------------------------------------------------------------------------
 .PHONY: all test clean stackreport stackreport-arm
 
-all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN)) $(if $(HAVE_CURVE_HS_TEST),$(CURVE_HS_BIN)) $(if $(HAVE_CURVE_GOLD_TEST),$(CURVE_GOLD_BIN)) $(if $(HAVE_CURVE_MSG_TEST),$(CURVE_MSG_BIN))
+all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN)) $(if $(HAVE_CURVE_HS_TEST),$(CURVE_HS_BIN)) $(if $(HAVE_CURVE_GOLD_TEST),$(CURVE_GOLD_BIN)) $(if $(HAVE_CURVE_MSG_TEST),$(CURVE_MSG_BIN)) $(if $(HAVE_CURVE_AGENT_TEST),$(CURVE_AGENT_BIN))
 
 test: all
 	@echo "--- test_toml_scan ---"
@@ -242,6 +266,10 @@ endif
 ifneq ($(HAVE_CURVE_HS_TEST),)
 	@echo "--- test_curve_handshake ---"
 	$(CURVE_HS_BIN)
+endif
+ifneq ($(HAVE_CURVE_AGENT_TEST),)
+	@echo "--- test_curve_agent ---"
+	$(CURVE_AGENT_BIN)
 endif
 ifneq ($(HAVE_ENTROPY_TEST),)
 	@echo "--- test_entropy (desktop backend smoke test) ---"

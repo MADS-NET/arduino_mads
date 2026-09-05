@@ -638,16 +638,41 @@ handshake.
 
 ### 7.1 Enabling the feature
 
-A `#define` in the `.ino` will not reach library translation units. Two mechanisms:
+A `#define` in the `.ino` will not reach library translation units. **Settled at Phase 6, with
+both of this section's original claims corrected by measurement.**
 
-* `arduino-cli compile --build-property "compiler.cpp.extra_flags=-DMADS_ENABLE_CURVE"`.
-  **Verified working** with arduino-cli 1.2.2 and `arduino:renesas_uno@1.6.0`. Note it
-  *replaces* rather than appends to `compiler.cpp.extra_flags`; say so in the README.
-* `build_opt.h` in the sketch folder containing `-DMADS_ENABLE_CURVE`.
-  **Did not work** on that same arduino-cli 1.2.2 / core 1.6.0 combination -- the sketch never
-  saw the macro. Not tested across other versions, so this is a data point rather than proof it
-  never works. Phase 6 must re-check it on the actual target setup before documenting it as
-  supported, and must not ship `examples/crypto_pub/build_opt.h` as the only enable path.
+**Use this:**
+
+```sh
+arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi \
+  --build-property "build.extra_flags=-DMADS_ENABLE_CURVE" examples/crypto_pub
+```
+
+`renesas_uno@1.6.0`'s `platform.txt` substitutes `{build.extra_flags}` into **both** the C and the
+C++ recipe, so one flag covers everything. Note `--build-property` *replaces* a property rather
+than appending to it, so fold in anything else you were passing to it. Say that in the README.
+
+**`compiler.cpp.extra_flags` alone is not sufficient**, though this section originally recorded it
+as "verified working". It was verified at Phase 1, when nothing referenced Monocypher yet. From
+Phase 2 onward it compiles cleanly and then **fails at link**:
+
+```
+src/mads/crypto/nacl_box.cpp:27: undefined reference to `crypto_x25519'
+src/mads/crypto/nacl_box.cpp:20: undefined reference to `crypto_wipe'
+```
+
+Monocypher is C, so `monocypher_unit.c` compiles to nothing without the macro. The two-flag form
+(`compiler.cpp.extra_flags` **and** `compiler.c.extra_flags`) works and is byte-identical to the
+single `build.extra_flags` form -- 87140 flash / 10472 RAM either way.
+
+**`build_opt.h` cannot work on this core at all**, which is stronger than the "did not work on
+1.2.2, untested elsewhere" recorded here before. The root cause is in the core, not in
+arduino-cli: `arduino:renesas_uno@1.6.0`'s `platform.txt` never references `{build.opt.path}` in
+any recipe (`grep -c build.opt.path` returns 0), so the file is read by nobody. Confirmed
+empirically on arduino-cli **1.0.2** as well as 1.2.2, with and without comments in the file.
+`examples/crypto_pub` therefore ships **no** `build_opt.h`: a file that silently does nothing is
+worse than its absence, because the failure it produces is an unencrypted connection. The sketch
+guards against that directly -- its `#else` branch refuses to run rather than connecting in clear.
 
 ### 7.2 Stack
 
@@ -717,6 +742,19 @@ Rules, replacing the ones above:
 Record, in the commit message, for `examples/uno_r4_sensor` (disabled) and `examples/crypto_pub`
 (enabled): flash bytes, global RAM bytes, and the delta. Baseline today is ~70 KB flash / ~8.8 KB
 RAM. Expected: **+10-13 KB flash, +~300 B RAM when enabled; 0/0 when disabled.**
+
+*Both estimates corrected by measurement. Actuals for `examples/crypto_pub`, the same sketch built
+each way (arduino-cli 1.0.2, core 1.6.0):*
+
+| build | flash | RAM |
+|---|---|---|
+| CURVE disabled | 68844 | 8744 |
+| CURVE enabled | **87140** | **10472** |
+| delta | **+18296 (17.9 KB)** | **+1728** |
+
+Flash is ~5 KB over the +10-13 KB guess and RAM roughly 5x over, but in context both are
+comfortable: 33% of 256 KB flash, and 10.5 KB of 32 KB RAM. The three CURVE-free examples are
+unchanged at 68952 / 70024 / 70144, so nothing leaked into the disabled path.
 
 *RAM estimate corrected at Phase 5.* The +~300 B guess is roughly 5x too low. Measured on the
 board's toolchain the enabled build costs about **1.4 KB** of RAM:
