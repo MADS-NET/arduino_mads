@@ -233,8 +233,7 @@ public:
    *
    * A completed handshake leaves this at 3 -- HELLO took 1 and INITIATE
    * took 2 -- after which every MESSAGE frame consumes one. Its value right
-   * after a reconnect is the check CURVE_PLAN.md Phase 8 step 5 asks for:
-   * reusing a nonce with a surviving key would be catastrophic, and seeing
+   * after a reconnect is the check DEVELOPER.md, and seeing
    * it back at 3 confirms the session state really was wiped and
    * renegotiated rather than carried across the reconnect.
    */

@@ -1,14 +1,13 @@
 #include "entropy.hpp"
 
 // Board backend: the RA4M1's Secure Crypto Engine TRNG, already linked
-// into every UNO R4 sketch (CURVE_PLAN.md Sec 3.1) via
+// into every UNO R4 sketch via
 // variants/UNOWIFIR4/libs/libfsp.a (member hw_sce_p09.o), which defines
 // HW_SCE_McuSpecificInit and HW_SCE_GenerateRandomNumberSub. FSP's r_sce.h
 // (the real declarations) is not shipped with arduino:renesas_uno, so they
 // are declared by hand below.
 //
-// [Likely, unverified on hardware] -- this is Phase 8's gate (out of this
-// pass's scope: this environment has no board). Guarded off entirely on
+// Verified on hardware 2026-09-05: see DEVELOPER.md. Guarded off entirely on
 // the desktop (ARDUINO_ARCH_RENESAS is only ever defined by the Arduino
 // builder's recipe.cpp.o.pattern) so it compiles but is never the desktop
 // path -- entropy_desktop.cpp provides Mads::entropy_init/entropy_fill
@@ -47,12 +46,12 @@ bool entropy_init() {
 
   HW_SCE_McuSpecificInit();
 
-  // Crude sanity check (CURVE_PLAN.md Sec 3.1): draw 64 bytes as four
+  // Crude sanity check: draw 64 bytes as four
   // 16-byte blocks and reject if the whole draw is constant (all-zero or
   // all-0xFF) or if any block repeats the immediately preceding one. This
-  // is a dead-TRNG bring-up gate, not a statistical randomness test --
-  // Phase 8's checklist (dump 4KB over Serial, compare across power
-  // cycles) is the real verification, and this function cannot do that
+  // is a dead-TRNG bring-up gate, not a statistical randomness test. The
+  // real verification -- 16 KB dumped over Serial and compared across power
+  // cycles -- is extras/hardware/phase8_diag; this function cannot do that
   // from software alone.
   uint8_t blocks[4][16];
   for (auto &b : blocks) {

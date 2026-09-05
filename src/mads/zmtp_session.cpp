@@ -109,7 +109,7 @@ bool ZmtpSession::recv_ready(uint32_t timeout_ms) {
 }
 
 bool ZmtpSession::handshake(const char *socket_type, uint32_t timeout_ms) {
-  // The mechanism branch (CURVE_PLAN.md Sec 2). Under NULL curve_active() is
+  // The mechanism branch (DEVELOPER.md, the mechanism seam). Under NULL curve_active() is
   // a constexpr false and this whole arm folds away; see the seam block in
   // the header for why it needs no #ifdef here.
   if (curve_active())
@@ -130,7 +130,7 @@ bool ZmtpSession::send_subscription(const char *topic, bool subscribe) {
   // downgraded (minor=0) decoder expects to find -- under CURVE it expects
   // to find it *inside the ciphertext*, so this has to be assembled and
   // handed to send_frame_raw() rather than written straight to the
-  // transport as it used to be. CURVE_PLAN.md Phase 5 says subscriptions
+  // transport as it used to be. DEVELOPER.md says subscriptions
   // need no special handling, which is true of their content and not of
   // their framing.
   const size_t topic_len = strlen(topic);

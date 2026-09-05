@@ -15,7 +15,7 @@
 // crypto_box_easy_afternm()/crypto_box_open_easy_afternm(), i.e. exactly
 // this construction (verified against
 // https://github.com/zeromq/libzmq/blob/v4.3.5/src/curve_mechanism_base.cpp
-// lines ~130-250, since this is the one thing CURVE_PLAN.md warns is the
+// lines ~130-250, since this is the one thing DEVELOPER.md warns is the
 // most likely bug and its own prose ("block 0 is the Poly1305 key,
 // ciphertext starts at block 1") reads as the 64-byte block boundary, which
 // would be a 32-byte misalignment against the real wire protocol -- see the
@@ -50,7 +50,7 @@ bool secretbox_open(uint8_t *pt, const uint8_t *in, size_t n_ct,
                     const uint8_t nonce[24], const uint8_t key[32]);
 
 /// Two-pass writer: encrypts a caller-owned buffer with no extra copy of
-/// the plaintext or ciphertext (CURVE_PLAN.md Sec 5's blob publish path).
+/// the plaintext or ciphertext (the blob publish path).
 /// Usage: init(); absorb(flags_byte,1); absorb(data,len); tag(mac); then
 /// either send the frame header+mac now and stream the ciphertext with
 /// restart()+encrypt(), or call encrypt() directly for a buffered send.

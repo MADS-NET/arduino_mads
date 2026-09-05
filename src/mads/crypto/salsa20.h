@@ -1,12 +1,12 @@
 #pragma once
 // Salsa20 / HSalsa20 / XSalsa20, guarded by MADS_ENABLE_CURVE by the one
 // translation unit that compiles this (salsa20.cpp is only ever built when
-// the caller defines MADS_ENABLE_CURVE -- see CURVE_PLAN.md Sec 7.1/Sec 3).
+// the caller defines MADS_ENABLE_CURVE -- see DEVELOPER.md).
 //
 // Monocypher does not ship Salsa20 (its own key exchange uses HChaCha20),
 // so this is written from scratch against the NaCl reference
 // (tweetnacl.c's unified core()/crypto_stream_salsa20_xor(), fetched from
-// https://tweetnacl.cr.yp.to/20140427/tweetnacl.c per CURVE_PLAN.md Sec
+// https://tweetnacl.cr.yp.to/20140427/tweetnacl.c per DEVELOPER.md Sec
 // 2.2's instruction to work from the NaCl reference, not memory) and
 // cross-checked against the published NaCl/libsodium test vectors in
 // test/desktop/test_crypto_vectors.cpp.
@@ -40,7 +40,7 @@ void hsalsa20(uint8_t out[32], const uint8_t in[16], const uint8_t key[32]);
 /// crypto/nacl_box.cpp needs that to reuse block 0's keystream for both the
 /// Poly1305 key (its first 32 bytes) and the first 32 ciphertext bytes (its
 /// second 32 bytes), matching libzmq v4.3.5's crypto_box_afternm framing
-/// (see nacl_box.cpp's file comment for why -- CURVE_PLAN.md's "block 0 is
+/// (see nacl_box.cpp's file comment for why -- DEVELOPER.md's "block 0 is
 /// the Poly1305 key, ciphertext starts at block 1" undersells this: it is
 /// byte 32, not the 64-byte block-1 boundary).
 struct XSalsa20Keystream {

@@ -12,7 +12,7 @@ namespace Mads {
 namespace {
 
 // ---------------------------------------------------------------------------
-// Wire constants. Every offset below is from CURVE_PLAN.md Appendix A, which
+// Wire constants. Every offset below is from DEVELOPER.md wire layouts, which
 // is itself taken from libzmq v4.3.5 -- none of it is inferred.
 // ---------------------------------------------------------------------------
 constexpr size_t HELLO_BODY = 200;   // A.2
@@ -313,7 +313,7 @@ bool curve_handshake(Transport &t, const CurveKeys &k, const char *socket_type,
 }
 
 // ===========================================================================
-// MESSAGE framing (CURVE_PLAN.md Phase 5, Appendix A.6).
+// MESSAGE framing (DEVELOPER.md, Appendix A.6).
 //
 // These are ZmtpSession members, defined here rather than in
 // zmtp_session.cpp so that they sit inside this file's single
@@ -394,7 +394,7 @@ bool ZmtpSession::curve_send(const uint8_t *data, size_t len, uint8_t flags) {
   // which is Phase 5's acceptance criterion. The one-shot branch above did
   // not run, so g_scratch is free: the prologue and the chunk buffer are
   // carved out of it rather than costing either stack or new .bss.
-  // CURVE_PLAN.md Phase 5 suggests 64-byte chunks. That was written before
+  // DEVELOPER.md suggests 64-byte chunks. That was written before
   // anyone had measured a write: at ~9.3 ms per SPI round-trip to the ESP32,
   // 64 bytes means a 16 KB blob costs 256 writes and about 2.4 s. The chunk
   // is a fixed slice of the existing static scratch, so enlarging it does
@@ -467,7 +467,7 @@ bool ZmtpSession::curve_recv_header(uint8_t &flags, uint64_t &len,
   _rx.init(_curve.precom, nonce, pro + 16);
 
   // The flags byte is the first plaintext byte. Consuming it here is what
-  // lets every caller see a body of pure payload -- CURVE_PLAN.md Phase 5
+  // lets every caller see a body of pure payload -- DEVELOPER.md
   // suggests giving poll()'s buffer a spare byte or memmoving the payload
   // down by one, and neither is needed if the prologue absorbs it.
   uint8_t fb;

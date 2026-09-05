@@ -11,7 +11,7 @@
 //     printing its output as hex to stdout. The Makefile's `test` target
 //     runs the resulting binary twice, as two independent OS processes,
 //     and diffs the output -- proving "identical bytes across runs"
-//     (CURVE_PLAN.md Sec 3.2's acceptance) the only way that claim can
+//     (DEVELOPER.md) the only way that claim can
 //     actually be demonstrated: not by calling entropy_fill() twice in
 //     one process (which just shows the generator advances, not that a
 //     fresh run reproduces it), but by two separate process invocations.

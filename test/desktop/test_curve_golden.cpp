@@ -1,4 +1,4 @@
-// Golden vectors for the CURVE handshake (CURVE_PLAN.md Phase 4.2).
+// Golden vectors for the CURVE handshake (DEVELOPER.md).
 //
 // Pins the exact HELLO and INITIATE bytes this client puts on the wire, so
 // any later change to the handshake that alters them fails loudly instead of
@@ -17,7 +17,7 @@
 // The goldens were recorded only after the same code completed a live
 // handshake against a real `mads broker --crypto` with auth_verbose showing
 // `granted` on all three socket types -- a golden captured from an
-// unverified run just freezes a bug (CURVE_HANDOFF.md Sec 7).
+// unverified run just freezes a bug (DEVELOPER.md).
 //
 // IMPORTANT -- what invalidates these vectors. Determinism here is over the
 // *sequence* of entropy_fill() calls, not wall time. curve_handshake() draws

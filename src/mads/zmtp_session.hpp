@@ -56,7 +56,7 @@ inline size_t zmtp_build_metadata(uint8_t *out, size_t cap,
  *
  * With `MADS_ENABLE_CURVE` undefined, this class has no crypto member and
  * every method is a direct, non-branching equivalent of that earlier
- * stateless design -- same instructions, same RAM. See CURVE_PLAN.md Sec 2.
+ * stateless design -- same instructions, same RAM. See DEVELOPER.md, the mechanism seam.
  *
  * A from-scratch, minimal implementation of just the ZMTP 3.0 wire
  * mechanics MADS needs: the NULL-security handshake (and, when enabled,
@@ -76,7 +76,7 @@ inline size_t zmtp_build_metadata(uint8_t *out, size_t cap,
  * between the two minor versions, so this is a safe simplification, not a
  * protocol violation. It is also load-bearing for CURVE: keeping minor=0
  * is what keeps SUBSCRIBE a plain encrypted MESSAGE body instead of a
- * command frame (CURVE_PLAN.md Appendix A.1).
+ * command frame (DEVELOPER.md wire layouts (A.1)).
  */
 class ZmtpSession {
 public:
@@ -95,7 +95,7 @@ public:
   explicit ZmtpSession(Transport &t) : _t(t) {}
 
   /// Clears all per-connection protocol state. MUST be called before every
-  /// handshake, including reconnects -- see CURVE_PLAN.md Sec 1 non-negotiable
+  /// handshake, including reconnects -- see DEVELOPER.md, CURVE invariants non-negotiable
   /// 2 (never reuse a (precom key, nonce) pair). Defined inline: under NULL
   /// there is nothing to clear, and with no cross-TU LTO in the Arduino
   /// build, an out-of-line empty function still costs a real call at every
@@ -167,7 +167,7 @@ public:
 
   /// Reads and discards `len` bytes of a frame body. Still authenticates
   /// under CURVE -- a frame we intend to drop is not exempt from the MAC
-  /// check (CURVE_PLAN.md Sec 1 non-negotiable 5).
+  /// check (DEVELOPER.md, CURVE invariant 5).
   bool skip_frame_body(uint64_t len, uint32_t timeout_ms);
 
   /**
@@ -200,7 +200,7 @@ public:
 
 private:
   // The greeting's mechanism field: 20 zero-padded octets at offset 12.
-  // CURVE_PLAN.md Appendix A.1 tabulates it as 16 bytes, which is a slip in
+  // DEVELOPER.md wire layouts (A.1) tabulates it as 16 bytes, which is a slip in
   // the plan rather than a difference on the wire -- bytes 28-31 are zero
   // under either reading, and `as-server` is at 32 in both, so the emitted
   // and accepted bytes are identical. 20 is what ZMTP 3.0 and libzmq say.
@@ -266,7 +266,7 @@ private:
   bool send_frame_raw(const uint8_t *data, size_t len, uint8_t flags);
 
   // -------------------------------------------------------------------
-  // The mechanism seam (CURVE_PLAN.md Sec 2). Every CURVE-specific member
+  // The mechanism seam (DEVELOPER.md, the mechanism seam). Every CURVE-specific member
   // is declared here and stubbed in the #else, so the rest of this class
   // and all of zmtp_session.cpp can branch on plain `if (curve_active())`
   // with no #ifdef of their own. Under NULL curve_active() is a constexpr
@@ -283,7 +283,7 @@ public:
   /// calling this, leaves the session on the NULL mechanism.
   void set_curve_keys(const CurveKeys *k) { _curve_keys = k; }
   /// Read-only view of the armed state -- exists so a caller can assert
-  /// nonce_out == 3 after a fresh handshake (CURVE_PLAN.md Phase 8 step 5).
+  /// nonce_out == 3 after a fresh handshake (DEVELOPER.md).
   const CurveState &curve_state() const { return _curve; }
 
 private:

@@ -15,7 +15,7 @@
 // Build:
 //   arduino-cli compile --upload -p <port> --fqbn arduino:renesas_uno:unor4wifi \
 //     --library . --build-property "build.extra_flags=-DMADS_ENABLE_CURVE" \
-//     test/hardware/curve_bench
+//     extras/hardware/curve_bench
 #include <MadsUnoAgent.h>
 #include "arduino_secrets.h"
 

@@ -77,7 +77,7 @@ bool secretbox_open(uint8_t *pt, const uint8_t *in, size_t n_ct,
   uint8_t computed[16];
   crypto_poly1305_final(&poly, computed);
 
-  // Constant-time compare -- never memcmp (CURVE_PLAN.md Sec 1 non-negotiable 6).
+  // Constant-time compare -- never memcmp (DEVELOPER.md, CURVE invariant 6).
   bool ok = crypto_verify16(computed, in) == 0;
 
   crypto_wipe(mac_key, sizeof mac_key);

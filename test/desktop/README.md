@@ -103,7 +103,7 @@ exist only inside a full Arduino build.
 Override the toolchain location with `ARM_TOOLCHAIN=/path/to/bin` if the
 core is installed somewhere unusual.
 
-What it currently reports, and why it matters, is in CURVE_HANDOFF.md
+What it currently reports, and why it matters, is in DEVELOPER.md
 Sec 5: a single `box_beforenm()` (one X25519) is 864 bytes against the
 board's 1024-byte main stack.
 

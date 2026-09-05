@@ -27,7 +27,7 @@ namespace Mads {
 // Injectable deterministic stream: a fixed-seed 64-bit LCG (Knuth's MMIX
 // constants), NOT cryptographically secure and not meant to be -- its only
 // job is making CURVE handshake output byte-reproducible across test runs
-// (CURVE_PLAN.md Phase 4's golden vectors, out of this pass's scope, but
+// (DEVELOPER.md's golden vectors, out of this pass's scope, but
 // the hook itself is Phase 3's). Determinism follows directly from the
 // state being process-local and always starting from the same fixed
 // value: a fresh process run reproduces the exact same byte sequence for

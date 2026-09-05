@@ -1,6 +1,6 @@
 #pragma once
 // Entropy source interface for CURVE's transient keypair and vouch nonce.
-// CURVE_PLAN.md Sec 1 non-negotiable 1: entropy_fill() returning false MUST
+// DEVELOPER.md, CURVE invariant 1: entropy_fill() returning false MUST
 // be fatal to any caller -- there is no fallback to random()/micros()/
 // analogRead(). A weak transient key destroys forward secrecy silently.
 //

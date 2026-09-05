@@ -9,7 +9,7 @@ function pointers, and recursion, are flagged rather than followed), and
 reports the heaviest root-to-leaf stack sum.
 
 Known limitations, acceptable for this purpose (a budgeting aid, not a
-correctness proof -- see CURVE_PLAN.md Sec 7.2 for what actually gates the
+correctness proof -- see DEVELOPER.md, Stack for what actually gates the
 board):
   - Functions are matched between .su (demangled signature) and objdump
     (mangled symbol, demangled here with c++filt) by signature text. Two
@@ -34,7 +34,7 @@ board):
     seeing structure.
   - Both C++ and C sources are included. Leaving C out was a real
     under-count: Monocypher is C, and it holds the deepest frame in the
-    whole handshake (see CURVE_HANDOFF.md Sec 5).
+    whole handshake (see DEVELOPER.md).
 """
 import os
 import re

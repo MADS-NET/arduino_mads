@@ -318,7 +318,7 @@ endif
 # via -fstack-usage + a call-graph walk (see stackreport.py). Needed from
 # Phase 3 onward (entropy backends) and mandatory once curve_handshake exists
 # (Phase 4+, out of this pass's scope) to prove the 512-byte budget in
-# CURVE_PLAN.md Sec 7.2.
+# DEVELOPER.md, Stack.
 # ---------------------------------------------------------------------------
 # C sources are included deliberately: Monocypher is C, and omitting it made
 # the report silently miss the deepest frame in the whole handshake.
@@ -359,7 +359,7 @@ stackreport:
 # Scope is deliberately the crypto sources only: they are freestanding, while
 # mads_agent.cpp pulls in WiFiS3.h and ArduinoJson, which only exist inside a
 # full Arduino build. That is enough for what this is needed for -- sizing
-# X25519 and the NaCl box layer against CURVE_PLAN.md Sec 7.2.
+# X25519 and the NaCl box layer against DEVELOPER.md, Stack.
 # ---------------------------------------------------------------------------
 ARM_TOOLCHAIN ?= $(HOME)/Library/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/bin
 ARM_PREFIX := $(ARM_TOOLCHAIN)/arm-none-eabi-

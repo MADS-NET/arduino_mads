@@ -1,5 +1,4 @@
-// CURVE_PLAN.md Phase 8 step 2: the stack high-water mark with the *real
-// agent* running, not the crypto alone.
+// DEVELOPER.md, not the crypto alone.
 //
 // The earlier 1612-1668 B figure came from a sketch that barely touched the
 // heap. That matters, because on this board the heap and the stack grow
@@ -14,7 +13,7 @@
 // Build:
 //   arduino-cli compile --upload -p <port> --fqbn arduino:renesas_uno:unor4wifi \
 //     --library . --build-property "build.extra_flags=-DMADS_ENABLE_CURVE" \
-//     test/hardware/stack_probe
+//     extras/hardware/stack_probe
 #include <MadsUnoAgent.h>
 #include "arduino_secrets.h"
 

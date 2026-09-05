@@ -9,7 +9,7 @@
 // itself would pass even if both directions used the same prefix, which
 // would be a real interoperability bug against a live broker.
 //
-// std::vector is fine here: the no-allocation rule (CURVE_PLAN.md Sec 1
+// std::vector is fine here: the no-allocation rule (DEVELOPER.md, CURVE invariants
 // non-negotiable 9) governs the library, not desktop test scaffolding.
 #include "crypto/monocypher.h"
 #include "crypto/nacl_box.h"

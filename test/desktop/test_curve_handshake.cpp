@@ -1,4 +1,4 @@
-// Live CURVE handshake test (CURVE_PLAN.md Phase 4.2).
+// Live CURVE handshake test (DEVELOPER.md).
 //
 // Skipped cleanly -- exit 0, prints SKIPPED -- unless MADS_BROKER_HOST and
 // MADS_CURVE_KEYS_DIR are set, so it is safe to run anywhere.
@@ -38,7 +38,7 @@ static void check(bool ok, const char *what) {
 }
 
 // --- Z85 -------------------------------------------------------------------
-// Decoding lives here rather than in the library on purpose: CURVE_PLAN.md
+// Decoding lives here rather than in the library on purpose: DEVELOPER.md
 // Phase 4 takes CurveKeys already decoded, and z85.{hpp,cpp} is Phase 6's
 // deliverable. Duplicating 20 lines in a test is cheaper than pulling a
 // phase forward.
@@ -166,7 +166,7 @@ int main() {
                    err_name(Mads::curve_last_error()));
     check(ok, c.type);
     // HELLO consumed nonce 1 and INITIATE nonce 2, so a completed handshake
-    // must leave the counter at 3 -- CURVE_PLAN.md Phase 8 step 5, which
+    // must leave the counter at 3 -- DEVELOPER.md, which
     // exists because a reconnect that restarted it would reuse a nonce.
     if (ok) {
       check(nonce_out == 3, "nonce_out == 3 after handshake");
@@ -179,7 +179,7 @@ int main() {
   }
 
   // --- 2. Negative: wrong broker key -> the broker hangs up ---------------
-  // CURVE_PLAN.md Sec 4.2 predicts CurveError::mac here, on the reasoning
+  // The implementation plan predicted CurveError::mac here, on the reasoning
   // that WELCOME fails to open. That does not happen and cannot: HELLO is
   // sealed with beforenm(S, c'), so a wrong S means the *broker* cannot open
   // our HELLO and drops the connection without replying. Confirmed against a

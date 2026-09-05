@@ -10,7 +10,7 @@
 > TweetNaCl (whose `crypto_scalarmult` frame would not have fitted), and the
 > judgement that the flash and RAM cost was affordable.
 >
-> What it got wrong, all corrected in [CURVE_PLAN.md](CURVE_PLAN.md):
+> What it got wrong, all corrected in [DEVELOPER.md](DEVELOPER.md):
 > the RAM estimate was about 5x low (~1.9 KB actual, not ~300 B) and flash
 > about 5 KB low; the 1 KB "main stack" turned out to be a guaranteed floor
 > rather than a ceiling, with ~20 KB actually available; and the performance
@@ -21,7 +21,7 @@
 
 
 Status: **study only, no code**. The implementation plan derived from it is
-[CURVE_PLAN.md](CURVE_PLAN.md). This document is the result of reading the exact wire behaviour
+[DEVELOPER.md](DEVELOPER.md). This document is the result of reading the exact wire behaviour
 out of libzmq v4.3.5 (the version MADS pins in `vendors/CMakeLists.txt`) and out of the MADS
 broker's own CURVE/ZAP setup, and costing it against this library's measured footprint. It says
 what would have to be built, what it would cost, and where it can go wrong.
@@ -305,7 +305,7 @@ compile byte-identically to today.
 * On-board key generation. **Settled: not doing it.** Keys are generated with
   `mads --keypair` on a PC and embedded at compile time from `arduino_secrets.h`. This
   knowingly departs from CRYPTO.md's "the private key shall never be moved from the device
-  where it was generated"; see CURVE_PLAN.md Phase 6 for the consequences. It does **not**
+  where it was generated"; see DEVELOPER.md for the consequences. It does **not**
   remove the need for a real TRNG -- the per-connection transient keypair and vouch nonce
   are still generated on the board (§5).
 * CURVE *server* mode -- the board is only ever a client.

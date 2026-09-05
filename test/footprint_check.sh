@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CURVE_PLAN.md Phase 7: build gating and footprint proof, as a repeatable
+# DEVELOPER.md, Footprint proof, as a repeatable
 # check rather than a set of numbers someone once pasted into a commit.
 #
 # Proves two things:

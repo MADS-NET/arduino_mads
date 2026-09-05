@@ -9,8 +9,10 @@ Related documents:
 | file | what it is |
 |---|---|
 | [CURVE.md](CURVE.md) | the original feasibility study for CURVE, kept as the reasoning record |
-| [CURVE_PLAN.md](CURVE_PLAN.md) | the implementation plan, with corrections applied where reality disagreed |
-| [CURVE_HANDOFF.md](CURVE_HANDOFF.md) | phase-by-phase status and what was measured when |
+
+The implementation plan and its phase-by-phase handoff notes were deleted once
+the work landed. What was normative in them -- the invariants source comments
+cite, and the wire layouts -- is reproduced below; what was process is gone.
 
 ---
 
@@ -62,6 +64,70 @@ to move it back, not to raise the number.
 ```sh
 grep -rn "^#ifdef MADS_ENABLE_CURVE\|^#if defined(MADS_ENABLE_CURVE)" src/ | wc -l
 ```
+
+---
+
+## CURVE invariants
+
+Correctness and security properties. Violating any of them produces code that
+appears to work and is broken. Source comments refer to these by number.
+
+1. **Fail closed on entropy.** If the source is unavailable or fails its
+   sanity check the handshake returns false. There is no fallback to
+   `random()`, `micros()` or `analogRead()` — a weak transient key destroys
+   forward secrecy silently. Unaffected by keys being compile-time embedded:
+   the *transient* keypair and vouch nonce are still drawn on the board, per
+   connection.
+2. **Never reuse a (precom key, nonce) pair.** Session state lives and dies
+   with the transport; `ZmtpSession::reset()` before every handshake,
+   reconnects included.
+3. **The outgoing nonce starts at 1**, big-endian, incrementing once per
+   HELLO, INITIATE and MESSAGE — so a completed handshake leaves it at 3.
+4. **Incoming nonces must increase strictly.** Anything else is a replay or
+   a reorder and is refused.
+5. **Verify the Poly1305 tag on every received frame, including discarded
+   ones.** The skip path authenticates; it just throws the plaintext away.
+6. **Constant-time tag comparison.** Never `memcmp`.
+7. **MESSAGE frames are ordinary frames** (outer flags `0x00`, or `0x02`
+   when the body exceeds 255). `MORE` travels *inside* the ciphertext. Only
+   handshake commands carry `0x04`.
+8. **The Poly1305 key is keystream bytes 0–31; the ciphertext starts at
+   keystream byte 32** — inside block 0, not at the 64-byte boundary. Bytes
+   32–63 encrypt the message's first 32 bytes. This is NaCl's
+   `crypto_secretbox` convention and what libzmq v4.3.5 does; the
+   "block 0 / block 1" phrasing is the *ChaCha20*-Poly1305 rule and would
+   misalign every frame by 32 bytes.
+9. **No dynamic allocation** anywhere in the library: no `new`, `malloc`,
+   `String` or `std::vector`.
+10. **A build without `MADS_ENABLE_CURVE` links no crypto at all** —
+    verified by symbol, not by byte count (see Footprint proof).
+
+---
+
+## Wire layouts
+
+From libzmq v4.3.5. Short nonces are big-endian `uint64`. `curve.cpp` takes
+every offset from here; none is inferred.
+
+**Greeting** (64 B): `0xFF`, 8 zeros, `0x7F`, revision `3`, minor `0`,
+mechanism zero-padded at offset 12 (20 octets), as-server `0` at 32, filler.
+Minor stays 0 deliberately: it pins the broker's per-connection encoder to
+the legacy single-byte-prefixed SUBSCRIBE and avoids heartbeating.
+
+| frame | layout |
+|---|---|
+| **HELLO** command, 200 B | `\x05HELLO`(6) ‖ `\x01\x00`(2) ‖ zeros(72) ‖ `C'`(32) ‖ nonce(8) ‖ box(80) under `"CurveZMQHELLO---"‖nonce`, key `beforenm(S,c')`, plaintext 64 zeros |
+| **WELCOME** command, 168 B | `\x07WELCOME`(8) ‖ long nonce(16) ‖ box(144) under `"WELCOME-"‖long`, key `beforenm(S,c')`, plaintext `S'`(32) ‖ cookie(96) |
+| **INITIATE** command, 257+md | `\x08INITIATE`(9) ‖ cookie(96) ‖ nonce(8) ‖ box under `"CurveZMQINITIATE"‖nonce`, key `beforenm(S',c')`, plaintext `C`(32) ‖ vouch tail(16) ‖ vouch box(80) ‖ metadata |
+| **vouch box** | `secretbox(C' ‖ S)` under `"VOUCH---"‖16 random`, key `beforenm(S',c)` |
+| **READY** command | `\x05READY`(6) ‖ nonce(8) ‖ box under `"CurveZMQREADY---"‖nonce`, key `precom` |
+| **ERROR** command | `\x05ERROR`(6) ‖ reason length(1) ‖ reason |
+| **MESSAGE** *ordinary* | `\x07MESSAGE`(8) ‖ nonce(8) ‖ tag(16) ‖ XSalsa20(flags_byte ‖ payload) |
+
+MESSAGE nonce prefixes are directional: `"CurveZMQMESSAGEC"` board→broker,
+`"CurveZMQMESSAGES"` broker→board. Overhead is a flat **33 bytes**, and the
+`FLAG_LARGE` threshold applies to that *expanded* length — a 223-byte
+payload crosses 255 once expanded.
 
 ---
 
@@ -140,6 +206,18 @@ count, not a byte count, is the property that matters** — a byte count goes
 stale the moment anything unrelated moves. It also fails if the *enabled*
 build has no crypto symbols, which catches a `--build-property` that silently
 did not take.
+
+### Hardware probes
+
+Sketches that need a real board live in `extras/hardware/` -- the Arduino
+library spec allows sketches only under `examples/` or `extras/`, and these
+are diagnostics rather than examples. See `extras/hardware/README.md`.
+
+| sketch | what it measures |
+|---|---|
+| `phase8_diag` | TRNG output for offline analysis, stack watermark, one X25519 |
+| `curve_bench` | publish latency, broken down by stage |
+| `stack_probe` | stack high-water and heap margin with the real agent running |
 
 ### Stack usage
 
@@ -339,17 +417,37 @@ CURVE without disturbing a plain one on 909x.
 
 ---
 
-## Open questions
+## TODO
 
-* **`subscribe()`'s return value.** It returns `false` both for "topic stored,
-  link not up yet" (a documented success) and "topic table full" (a real
-  failure), so a caller cannot tell them apart. Pre-existing; changing it is a
-  public API change.
-* **`recv_greeting()` compares only the mechanism name**, not libzmq's full
-  20-byte zero-padded field, so a peer advertising `NULLX` would be accepted.
-  Making it strict costs ~30 bytes in the *disabled* build, which the
-  footprint criterion does not allow.
-* **The ~30.6 ms fixed publish cost**, above.
-* **`ensure_wifi()` is on the publish path**, so a board that loses WiFi
-  re-enters `WiFi.begin()` at the reconnect interval. Given the hammering
-  caveat above, the 1 s default may be too aggressive for that specific case.
+Neither is urgent; both need a deliberate decision rather than a drive-by fix.
+
+### `subscribe()` returns `false` for two unrelated things
+
+It returns `false` both for *"topic stored, but the SUB link is not up yet so
+nothing went on the wire"* — which its own documentation calls safe, and which
+is a success — and for *"the topic table is full"*, which is a real failure. A
+caller cannot tell them apart, so the natural
+
+```cpp
+if (!agent.subscribe(topic)) { /* handle error */ }
+```
+
+is wrong whenever the link is merely down. That is not hypothetical: it is
+exactly the mistake this project's own first test made.
+
+Pre-existing, and fixing it changes a public API. Options: return `true` when
+the topic is durably stored (arguably what the docs already promise), or split
+"stored" from "sent" into a small enum. Worth settling because CURVE makes
+"link not up yet" considerably more common.
+
+### `recv_greeting()` compares only the mechanism name
+
+libzmq compares the whole 20-byte zero-padded field; this compares only
+`strlen(mechanism)` bytes, so a peer advertising `NULLX` would be accepted
+where libzmq rejects it.
+
+Deliberate, not an oversight: making it strict costs ~30 bytes of flash in the
+**disabled** build, and the footprint rule says that build must not grow for
+CURVE's benefit. No known peer advertises a mechanism name with a matching
+prefix, so this is latent tidiness rather than a live bug — but it is a real
+divergence from libzmq and should be a decision, not an accident.

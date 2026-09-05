@@ -1,5 +1,5 @@
 // Phase 2 crypto primitive tests: published test vectors plus differential
-// and round-trip self-consistency checks (CURVE_PLAN.md Sec 2.4). No
+// and round-trip self-consistency checks (DEVELOPER.md). No
 // network, no board -- pure computation against the crypto/ sources.
 //
 // Every numeric vector below comes from crypto_vectors_nacl.inc (libsodium

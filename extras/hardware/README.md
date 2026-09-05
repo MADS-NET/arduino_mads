@@ -5,7 +5,7 @@ not a test with a pass/fail exit code -- read the output.
 
 ## `phase8_diag`
 
-CURVE_PLAN.md Phase 8 steps 1-3, i.e. the parts that need neither a broker
+DEVELOPER.md, i.e. the parts that need neither a broker
 nor WiFi:
 
 1. **TRNG gate** -- `entropy_init()`, then 4 KB of `entropy_fill()` output
@@ -32,7 +32,7 @@ arduino-cli compile --upload -p /dev/cu.usbmodemXXXX \
   --fqbn arduino:renesas_uno:unor4wifi --library . \
   --build-property "compiler.cpp.extra_flags=-DMADS_ENABLE_CURVE" \
   --build-property "compiler.c.extra_flags=-DMADS_ENABLE_CURVE" \
-  test/hardware/phase8_diag
+  extras/hardware/phase8_diag
 ```
 
 The sketch runs nothing on its own: it waits for a `g` byte on Serial and
@@ -50,7 +50,7 @@ Any serial terminal works. Two notes if you script the capture:
   run` in the output tells you which you got. Re-uploading does reset the
   MCU; pulling the USB lead is the only true power cycle.
 
-### Results on 2026-09-04 (see CURVE_HANDOFF.md Sec 5 and Sec 1)
+### Results on 2026-09-04 (see DEVELOPER.md)
 
 TRNG passed: across 16 KB from four runs -- two cold boots, one repeat run,
 and one true power cycle -- 1024/1024 distinct 16-byte blocks, entropy

@@ -1,4 +1,4 @@
-// MADS CURVE -- Phase 8 hardware diagnostic (CURVE_PLAN.md Phase 8).
+// MADS CURVE -- Phase 8 hardware diagnostic (DEVELOPER.md).
 //
 // Runs the three Phase 8 checks that need neither a broker nor WiFi:
 //
@@ -11,7 +11,7 @@
 //   2. Stack      -- paint the free gap between the heap break and the live
 //                    stack, run the crypto, then find the deepest byte the
 //                    stack actually reached. This is the measurement
-//                    CURVE_HANDOFF.md Sec 5 asks for, against which the
+//                    DEVELOPER.md asks for, against which the
 //                    864-byte static estimate for box_beforenm can be
 //                    checked.
 //   3. Timing     -- one X25519 (box_beforenm), averaged over 16 runs.
@@ -26,7 +26,7 @@
 //     --library . \
 //     --build-property "compiler.cpp.extra_flags=-DMADS_ENABLE_CURVE" \
 //     --build-property "compiler.c.extra_flags=-DMADS_ENABLE_CURVE" \
-//     test/hardware/phase8_diag
+//     extras/hardware/phase8_diag
 
 // MadsUnoAgent.h first and deliberately: arduino-cli resolves libraries by
 // matching a sketch's #include against library header names, so without the

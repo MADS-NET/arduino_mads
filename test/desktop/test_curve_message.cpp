@@ -1,4 +1,4 @@
-// CURVE MESSAGE framing tests (CURVE_PLAN.md Phase 5).
+// CURVE MESSAGE framing tests (DEVELOPER.md).
 //
 // The peer here is MockBroker, which encrypts and decrypts with the
 // *opposite* directional nonce prefix to the client. That matters: a client

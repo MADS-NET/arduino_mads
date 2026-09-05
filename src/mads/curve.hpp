@@ -1,7 +1,7 @@
 #pragma once
 // CurveZMQ handshake: greeting-complete transport in, armed CurveState out.
 // Everything here compiles to nothing unless MADS_ENABLE_CURVE is defined
-// (CURVE_PLAN.md Sec 2 -- this file's guard is one of the budgeted #ifdef
+// (DEVELOPER.md, the mechanism seam -- this file's guard is one of the budgeted #ifdef
 // blocks).
 #ifdef MADS_ENABLE_CURVE
 
@@ -23,7 +23,7 @@ struct CurveKeys {
 };
 
 /// Per-connection CURVE state. Created and destroyed with the transport --
-/// never carried across a reconnect (CURVE_PLAN.md Sec 1 non-negotiable 2:
+/// never carried across a reconnect (DEVELOPER.md, CURVE invariant 2:
 /// reusing a (precom, nonce) pair is catastrophic).
 struct CurveState {
   uint8_t precom[32];  ///< beforenm(S', c') -- the MESSAGE key
@@ -53,7 +53,7 @@ enum class CurveError : uint8_t {
   protocol     ///< anything else structurally wrong
 };
 
-// `disconnected` is not in CURVE_PLAN.md Sec 4.1's list, and is here because
+// `disconnected` was not in the original design's error list, and is here because
 // testing against a real broker showed the plan's Sec 4.2 expectation to be
 // unreachable. The plan predicts a wrong `server_public` surfaces as
 // CurveError::mac, "WELCOME open fails". It cannot: HELLO is sealed with
@@ -71,7 +71,7 @@ enum class CurveError : uint8_t {
 /**
  * Runs HELLO -> WELCOME -> INITIATE -> READY over `t`.
  *
- * **The greeting is NOT done here**, which deviates from CURVE_PLAN.md
+ * **The greeting is NOT done here**, which deviates from DEVELOPER.md
  * Phase 4's step list on purpose. The greeting's mechanism field is the
  * only part of it that differs between NULL and CURVE, while `minor = 0`
  * is load-bearing for CURVE specifically (it is what keeps SUBSCRIBE an
@@ -85,7 +85,7 @@ enum class CurveError : uint8_t {
  * On any failure `st` is wiped, every transient secret is wiped, and the
  * reason is available from curve_last_error().
  *
- * All working buffers are file-static, not locals (CURVE_PLAN.md Sec 7.2).
+ * All working buffers are file-static, not locals (DEVELOPER.md, Stack).
  * That makes this function, like the rest of the library, safe for exactly
  * one connection at a time -- which is what the Agent does.
  */
