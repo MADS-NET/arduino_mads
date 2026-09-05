@@ -64,7 +64,70 @@ static const char *curve_error_text(Mads::CurveError e) {
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// Status LED. One lamp, five states, read at a glance from across a room.
+//
+// The encoding is 8 slots of 250 ms, so one full cycle is 2 s:
+//
+//   no WiFi          #.......   one brief blink, mostly dark
+//   WiFi, no broker  ########   solid
+//   broker, plain    ####....   one long pulse per cycle
+//   broker, CURVE    ##.##...   TWO pulses per cycle
+//   CURVE rejected   #.#.#.#.   fast flutter -- needs a human
+//
+// Two deliberate choices:
+//
+// "Not connected" blinks rather than staying dark. Dark then means exactly
+// one thing -- no power, or firmware that is not running -- which is the
+// most useful single bit a status lamp can carry. (This board can wedge with
+// USB still enumerated and the firmware dead; a lamp that was merely off
+// would say nothing about that.)
+//
+// Plain and encrypted differ by pulse COUNT, not duty cycle. Counting one
+// flash versus two is instant; judging a 50% duty against a 67% one is not,
+// and mistaking unencrypted for encrypted is precisely the error that must
+// not be easy to make.
+static const uint8_t LED_SLOT_MS = 250;
+// Plain constants rather than an enum, and led_state() returns uint8_t:
+// the Arduino builder hoists auto-generated prototypes above everything in
+// the .ino, so a function returning a type declared here fails to compile.
+static const uint8_t LED_NO_WIFI = 0;
+static const uint8_t LED_WIFI_ONLY = 1;
+static const uint8_t LED_BROKER_PLAIN = 2;
+static const uint8_t LED_BROKER_CURVE = 3;
+static const uint8_t LED_CURVE_REJECTED = 4;
+static const uint8_t LED_PATTERN[] = {
+  0b10000000, // no WiFi
+  0b11111111, // WiFi, no broker
+  0b11110000, // broker, unencrypted
+  0b11011000, // broker, encrypted
+  0b10101010, // CURVE rejected, backing off
+};
+
+static uint8_t led_state() {
+  if (WiFi.status() != WL_CONNECTED)
+    return LED_NO_WIFI;
+#ifdef MADS_ENABLE_CURVE
+  // Backed off past the base interval means handshakes are being refused --
+  // deterministic, and it will not fix itself without someone adding this
+  // board's .pub to the broker and restarting it.
+  if (agent.crypto_enabled() && agent.curve_backoff() > agent.reconnect_interval())
+    return LED_CURVE_REJECTED;
+#endif
+  if (!agent.connected())
+    return LED_WIFI_ONLY;
+  // crypto_enabled() is false in a non-CURVE build, so this needs no #ifdef.
+  return agent.crypto_enabled() ? LED_BROKER_CURVE : LED_BROKER_PLAIN;
+}
+
+static void led_update() {
+  const uint8_t slot = (millis() / LED_SLOT_MS) % 8;
+  const bool on = (LED_PATTERN[led_state()] >> (7 - slot)) & 1;
+  digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
+}
+
 void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);
   Serial.begin(115200);
   while (!Serial && millis() < 3000) {}
 
@@ -102,6 +165,17 @@ void setup() {
 }
 
 void loop() {
+  // The LED is driven every pass. Rendering a 250 ms pattern from a loop
+  // that blocked for delay(200) plus a publish would alias badly -- and the
+  // pulse count, which is the whole point, is what aliasing destroys. So the
+  // publish runs on a millis() schedule instead of a delay().
+  led_update();
+
+  static uint32_t last_publish = 0;
+  if (millis() - last_publish < 200)
+    return;
+  last_publish = millis();
+
   doc.clear();
   doc["a0"] = analogRead(A0);
 
@@ -120,6 +194,4 @@ void loop() {
     Serial.println(curve_error_text(agent.last_curve_error()));
   }
 #endif
-
-  delay(200);
 }

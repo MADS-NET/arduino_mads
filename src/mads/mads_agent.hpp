@@ -345,6 +345,14 @@ private:
   uint32_t _curve_backoff_ms = 1000;
   uint32_t _curve_backoff_max_ms = 60000;
 #else
+public:
+  /// Always false in a build without CURVE compiled in. Present in both
+  /// modes so a sketch can branch on it -- a status LED, a startup banner --
+  /// without an #ifdef of its own. Stubbed here inside the existing #else
+  /// rather than as a new guard block, which Sec 2's budget has no room for.
+  static constexpr bool crypto_enabled() { return false; }
+
+private:
   void arm_session(ZmtpSession &) {}
   void note_handshake_failure() {}
   void note_handshake_success() {}
