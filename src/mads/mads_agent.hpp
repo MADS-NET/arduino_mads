@@ -171,6 +171,7 @@ public:
   void set_reconnect_interval(uint32_t ms) {
     _reconnect_interval_ms = ms;
     reset_curve_backoff();
+    reset_wifi_backoff();
   }
   uint32_t reconnect_interval() const { return _reconnect_interval_ms; }
 
@@ -248,6 +249,31 @@ public:
    */
   void set_sub_silence_timeout(uint32_t ms) { _sub_silence_ms = ms; }
   uint32_t sub_silence_timeout() const { return _sub_silence_ms; }
+
+  /**
+   * Current interval between WiFi *association* attempts, in ms.
+   *
+   * Rejoining is rate-limited separately from broker reconnection, and backs
+   * off from reconnect_interval() to wifi_backoff_max() while the join keeps
+   * failing. Two reasons, both learned the hard way:
+   *
+   * Re-entering WiFi.begin() every second or two restarts an association
+   * that is already in progress, and doing that repeatedly can leave the
+   * ESP32 module unresponsive -- no scan results, no connection, and
+   * (because uploading depends on the running sketch's USB stack) sometimes
+   * not even reflashable without unplugging the board.
+   *
+   * And the publish and poll paths each used to call ensure_wifi()
+   * independently, so a sketch doing both doubled the rate. They now share
+   * one attempt clock.
+   *
+   * A join that succeeds resets this to reconnect_interval(). Unlike the
+   * broker reconnect interval, backing off here costs nothing: WiFi
+   * association is not something the sketch can hurry along.
+   */
+  uint32_t wifi_backoff() const { return _wifi_backoff_ms; }
+  uint32_t wifi_backoff_max() const { return _wifi_backoff_max_ms; }
+  void set_wifi_backoff_max(uint32_t ms) { _wifi_backoff_max_ms = ms; }
 
   /// The agent_id merged into published messages: the constructor-given
   /// value, or (once begin() has joined WiFi) the MAC-address fallback.
@@ -359,6 +385,14 @@ private:
   void reset_curve_backoff() {}
   uint32_t retry_interval() const { return _reconnect_interval_ms; }
 #endif
+
+  /// Shared by every ensure_wifi() caller, so the pub, sub and settings
+  /// paths cannot each run their own association attempt.
+  void reset_wifi_backoff() { _wifi_backoff_ms = _reconnect_interval_ms; }
+  uint32_t _wifi_backoff_ms = 1000;
+  uint32_t _wifi_backoff_max_ms = 30000;
+  uint32_t _last_wifi_attempt = 0;
+  bool _wifi_attempted = false;
 
   uint32_t _reconnect_interval_ms = 1000;
   uint32_t _sub_silence_ms = 0;

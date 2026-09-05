@@ -43,14 +43,38 @@ bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
 
 bool Agent::ensure_wifi(uint32_t timeout_ms) {
   if (WiFi.status() != WL_CONNECTED) {
+    // Rate-limit the association attempt itself. Calling WiFi.begin() again
+    // while one is already in flight restarts it, and doing that every
+    // second or two can leave the module unresponsive -- see
+    // Agent::wifi_backoff(). _wifi_attempted lets the very first call
+    // through, so begin() is never delayed at startup.
+    const uint32_t now = millis();
+    if (_wifi_attempted && (now - _last_wifi_attempt) < _wifi_backoff_ms)
+      return false;
+    _wifi_attempted = true;
+    _last_wifi_attempt = now;
+
     WiFi.begin(_ssid, _pass);
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED) {
-      if (millis() - start > timeout_ms)
+      if (millis() - start > timeout_ms) {
+        // Back off before touching the radio again.
+        const uint32_t doubled = _wifi_backoff_ms * 2;
+        _wifi_backoff_ms = (doubled > _wifi_backoff_max_ms ||
+                            doubled < _wifi_backoff_ms)
+                               ? _wifi_backoff_max_ms
+                               : doubled;
         return false;
+      }
       delay(100);
     }
   }
+
+  // Reached whenever the radio is associated -- whether we just joined, or
+  // it came back on its own while we were backed off. Resetting only after
+  // *our* successful begin() would leave a board that recovered by itself
+  // permanently slow to react to the next drop.
+  reset_wifi_backoff();
 
   // WL_CONNECTED (AP association) can fire before DHCP has actually
   // assigned an IP -- wait explicitly for a real address rather than

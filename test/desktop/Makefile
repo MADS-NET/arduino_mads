@@ -240,17 +240,45 @@ $(CURVE_AGENT_BIN): $(CURVE_AGENT_SRCS) $(SRC_DIR)/crypto/monocypher_unit.c
 endif
 
 # ---------------------------------------------------------------------------
+# test_wifi_backoff -- WiFi association rate limiting. Needs no broker: the
+# stub simulates the radio being down.
+# ---------------------------------------------------------------------------
+WIFI_TEST_SRC := test_wifi_backoff.cpp
+WIFI_BIN := $(BUILD)/test_wifi_backoff
+HAVE_WIFI_TEST := $(wildcard $(WIFI_TEST_SRC))
+
+ifneq ($(HAVE_WIFI_TEST),)
+WIFI_SRCS := $(WIFI_TEST_SRC) $(SRC_DIR)/mads_agent.cpp \
+             $(SRC_DIR)/toml_scan.cpp $(AGENT_SESSION_SRC) \
+             $(STUB_DIR)/WiFiS3.cpp
+
+$(WIFI_BIN): $(WIFI_SRCS) $(ZMTP_EXTRA_SRCS)
+ifdef MADS_ENABLE_CURVE
+	$(CC) -std=c99 -Wall -O0 -g $(SAN) -DMADS_ENABLE_CURVE \
+	  -c $(SRC_DIR)/crypto/monocypher_unit.c -o $(BUILD)/monocypher_unit_wifi.o
+endif
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR)/.. -I$(SRC_DIR)/crypto \
+	  $(WIFI_SRCS) $(ZMTP_EXTRA_SRCS) \
+	  $(if $(MADS_ENABLE_CURVE),$(BUILD)/monocypher_unit_wifi.o) \
+	  -o $@ $(LDFLAGS)
+endif
+
+# ---------------------------------------------------------------------------
 # Top-level targets
 # ---------------------------------------------------------------------------
 .PHONY: all test clean stackreport stackreport-arm
 
-all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN)) $(if $(HAVE_CURVE_HS_TEST),$(CURVE_HS_BIN)) $(if $(HAVE_CURVE_GOLD_TEST),$(CURVE_GOLD_BIN)) $(if $(HAVE_CURVE_MSG_TEST),$(CURVE_MSG_BIN)) $(if $(HAVE_CURVE_AGENT_TEST),$(CURVE_AGENT_BIN))
+all: $(TOML_BIN) $(ZMTP_BIN) $(if $(HAVE_WIFI_TEST),$(WIFI_BIN)) $(if $(HAVE_CRYPTO_TEST),$(CRYPTO_BIN)) $(if $(HAVE_ENTROPY_TEST),$(ENTROPY_BIN) $(ENTROPY_DETERM_BIN)) $(if $(HAVE_CURVE_HS_TEST),$(CURVE_HS_BIN)) $(if $(HAVE_CURVE_GOLD_TEST),$(CURVE_GOLD_BIN)) $(if $(HAVE_CURVE_MSG_TEST),$(CURVE_MSG_BIN)) $(if $(HAVE_CURVE_AGENT_TEST),$(CURVE_AGENT_BIN))
 
 test: all
 	@echo "--- test_toml_scan ---"
 	$(TOML_BIN)
 	@echo "--- test_zmtp_null ---"
 	$(ZMTP_BIN)
+ifneq ($(HAVE_WIFI_TEST),)
+	@echo "--- test_wifi_backoff ---"
+	$(WIFI_BIN)
+endif
 ifneq ($(HAVE_CRYPTO_TEST),)
 	@echo "--- test_crypto_vectors ---"
 	$(CRYPTO_BIN)

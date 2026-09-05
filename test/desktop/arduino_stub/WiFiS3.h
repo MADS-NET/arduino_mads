@@ -169,9 +169,19 @@ static constexpr int WL_IDLE_STATUS = 0;
 
 class WiFiClass {
 public:
-  void begin(const char * /*ssid*/, const char * /*pass*/) { /* no-op */ }
-  int status() { return WL_CONNECTED; }
-  IPAddress localIP() { return IPAddress(127, 0, 0, 1); }
+  // --- test hooks -------------------------------------------------------
+  // The real radio cannot be made to fail on demand, and the behaviour worth
+  // testing -- how often the library re-enters WiFi.begin() while a join is
+  // failing -- is invisible unless the failure can be simulated and the
+  // calls counted. Both are stub-only; nothing in src/ references them.
+  static int begin_calls;   ///< how many times begin() has been called
+  static bool force_down;   ///< when true, status() never reports connected
+
+  void begin(const char * /*ssid*/, const char * /*pass*/) { ++begin_calls; }
+  int status() { return force_down ? WL_IDLE_STATUS : WL_CONNECTED; }
+  IPAddress localIP() {
+    return force_down ? IPAddress(0, 0, 0, 0) : IPAddress(127, 0, 0, 1);
+  }
   void macAddress(byte *mac) {
     // Fixed, obviously-fake MAC -- deterministic for tests.
     const uint8_t fake[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
