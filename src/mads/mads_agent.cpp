@@ -38,6 +38,7 @@ bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
     return false;
   }
   note_handshake_success();
+  _last_pub_connect = millis();
   return true;
 }
 
@@ -103,8 +104,18 @@ bool Agent::ensure_wifi(uint32_t timeout_ms) {
 }
 
 bool Agent::ensure_pub_link() {
-  if (_pub_transport.connected())
-    return true;
+  if (_pub_transport.connected()) {
+    // "Connected" is not trustworthy here: after a broker restart the ESP32
+    // keeps reporting this socket as established and keeps accepting
+    // writes, indefinitely, while nothing is delivered. A PUB socket gets
+    // no reply traffic, so there is no timeout to hang a watchdog on --
+    // rebuilding the link on a timer is the only reliable defence. See
+    // Agent::set_pub_refresh_interval().
+    if (_pub_refresh_ms == 0 ||
+        (millis() - _last_pub_connect) < _pub_refresh_ms)
+      return true;
+    _pub_transport.close();
+  }
   if (!_broker_host)
     return false;
 
@@ -139,6 +150,7 @@ bool Agent::ensure_pub_link() {
     return false;
   }
   note_handshake_success();
+  _last_pub_connect = millis();
   return true;
 }
 

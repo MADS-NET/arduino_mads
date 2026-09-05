@@ -265,6 +265,30 @@ public:
   uint32_t sub_silence_timeout() const { return _sub_silence_ms; }
 
   /**
+   * How often the PUB link is torn down and re-established regardless of
+   * how healthy it looks, in ms. Default 60000; 0 disables it.
+   *
+   * This exists because on this platform a dead PUB link is undetectable.
+   * `WiFiClient::connected()` asks the ESP32 for the socket state, and after
+   * a broker restart the ESP32 goes on reporting the socket as established
+   * while `write()` keeps accepting bytes -- measured holding for over two
+   * minutes, during which the board published 746 messages, reported every
+   * one as successful, and delivered none. A PUB socket receives no reply
+   * traffic, so there is nothing to time out on and no evidence of life to
+   * wait for: periodically rebuilding the link is the only reliable defence.
+   *
+   * The cost is one handshake per interval -- negligible under NULL, and
+   * about 180 ms under CURVE, so roughly 0.3% of a minute. Silent data loss
+   * is much the worse failure, which is why this defaults to on.
+   *
+   * A PUB socket carries no unacknowledged state, so rebuilding it loses
+   * nothing beyond messages already handed to a link that was not carrying
+   * them anyway.
+   */
+  void set_pub_refresh_interval(uint32_t ms) { _pub_refresh_ms = ms; }
+  uint32_t pub_refresh_interval() const { return _pub_refresh_ms; }
+
+  /**
    * Current interval between WiFi *association* attempts, in ms.
    *
    * Rejoining is rate-limited separately from broker reconnection, and backs
@@ -403,6 +427,8 @@ private:
   /// Shared by every ensure_wifi() caller, so the pub, sub and settings
   /// paths cannot each run their own association attempt.
   void reset_wifi_backoff() { _wifi_backoff_ms = _reconnect_interval_ms; }
+  uint32_t _pub_refresh_ms = 60000;
+  uint32_t _last_pub_connect = 0;
   uint32_t _wifi_backoff_ms = 1000;
   uint32_t _wifi_backoff_max_ms = 30000;
   uint32_t _last_wifi_attempt = 0;

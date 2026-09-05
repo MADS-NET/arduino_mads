@@ -224,6 +224,63 @@ int main() {
           "a successful handshake resets the backoff");
   }
 
+  // --- 5. The PUB link is rebuilt on a timer --------------------------------
+  // A dead PUB link is undetectable on the board: the ESP32 keeps reporting
+  // the socket as established and keeps accepting writes after a broker
+  // restart, so publish() returns true while nothing is delivered. The only
+  // defence is rebuilding the link periodically. Under CURVE that is
+  // directly observable -- a fresh handshake resets nonce_out to 3, so a
+  // counter that only ever climbs means the link was never rebuilt.
+  {
+    Mads::Agent a("refresh_probe");
+    check(a.set_crypto(client_pub, client_sec, broker_pub), "arm agent");
+    check(a.pub_refresh_interval() == 60000,
+          "PUB refresh defaults to 60 s");
+    a.set_pub_refresh_interval(400);
+    check(a.begin("unused-ssid", "unused-pass", host, port_se, "test_agent",
+                  "refresh_probe", 5000),
+          "begin() for the refresh test");
+
+    uint64_t prev = a.curve_nonce_out();
+    int resets = 0;
+    const uint32_t t0 = millis();
+    while (millis() - t0 < 2000) {
+      JsonDocument doc;
+      doc["source"] = "refresh_probe";
+      if (!a.publish(doc))
+        continue;
+      const uint64_t now = a.curve_nonce_out();
+      if (now < prev)
+        ++resets; // counter went backwards: a new handshake happened
+      prev = now;
+    }
+    std::printf("  PUB link rebuilds in 2 s at a 400 ms refresh: %d\n",
+                resets);
+    check(resets >= 2, "the PUB link is rebuilt on its refresh interval");
+
+    // And off means off -- the interval is a policy, not a hard-coded tic.
+    Mads::Agent b("norefresh_probe");
+    check(b.set_crypto(client_pub, client_sec, broker_pub), "arm second agent");
+    b.set_pub_refresh_interval(0);
+    check(b.begin("unused-ssid", "unused-pass", host, port_se, "test_agent",
+                  "norefresh_probe", 5000),
+          "begin() with refresh disabled");
+    uint64_t p2 = b.curve_nonce_out();
+    int resets2 = 0;
+    const uint32_t t1 = millis();
+    while (millis() - t1 < 1000) {
+      JsonDocument doc;
+      doc["source"] = "norefresh_probe";
+      if (!b.publish(doc))
+        continue;
+      const uint64_t now = b.curve_nonce_out();
+      if (now < p2)
+        ++resets2;
+      p2 = now;
+    }
+    check(resets2 == 0, "refresh interval 0 never rebuilds the link");
+  }
+
   std::printf("test_curve_agent: %d checks, %d failures\n", g_checks,
               g_failures);
   return g_failures ? 1 : 0;
