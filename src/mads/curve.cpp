@@ -31,6 +31,12 @@ constexpr size_t METADATA_CAP = 32;
 // WELCOME and INITIATE because they never overlap in time (Sec 7.2).
 constexpr size_t INITIATE_PROLOGUE = 113;
 constexpr size_t SCRATCH_CAP = INITIATE_PROLOGUE + 16 + 128 + METADATA_CAP;
+// The MESSAGE one-shot path builds its frame at g_scratch + ZMTP_HDR_MAX and
+// writes the outer header into the bytes just before it, so header and body
+// leave as one Transport::write(). On this board a write is an SPI
+// round-trip to the ESP32 costing ~9 ms, so halving the number of writes
+// halves publish latency -- the bytes themselves are almost free.
+constexpr size_t SCRATCH_TOTAL = ZMTP_HDR_MAX + SCRATCH_CAP;
 
 // 16-byte nonce prefixes (the trailing 8 bytes are the big-endian counter).
 const char NONCE_HELLO[] = "CurveZMQHELLO---";
@@ -56,7 +62,7 @@ constexpr size_t MSG_OVERHEAD = MSG_PROLOGUE + 1;
 // stack budget that is actually controllable. Together they are ~500 B of
 // .bss that a disabled build does not link at all.
 // ---------------------------------------------------------------------------
-uint8_t g_scratch[SCRATCH_CAP];
+uint8_t g_scratch[SCRATCH_TOTAL];
 uint8_t g_c_prime[32];   // c'  transient secret
 uint8_t g_C_prime[32];   // C'  transient public
 uint8_t g_k_Sc[32];      // beforenm(S,  c')  -- seals HELLO, opens WELCOME
@@ -341,19 +347,18 @@ bool ZmtpSession::curve_send(const uint8_t *data, size_t len, uint8_t flags) {
   const uint8_t logical = flags & (FLAG_MORE | FLAG_COMMAND);
   const size_t wire = len + MSG_OVERHEAD;
 
-  // Outer header carries flags 0: LARGE is decided on the *expanded* length,
-  // which zmtp_write_raw_header() does from `wire`. A 223-byte payload
-  // crosses 255 after expansion (Appendix C pitfall 5).
-  if (!zmtp_write_raw_header(_t, wire, 0))
-    return false;
-
   if (wire <= SCRATCH_CAP) {
     // One-shot path. The handshake is long finished by the time any MESSAGE
     // is sent, so its scratch buffer is free -- reusing it is Sec 7.2's
     // "one static scratch" rule rather than a second buffer. Covers every
     // JSON publish (Agent::PUBLISH_BUF_CAP is 256) and every topic and
     // header frame, halving the Salsa20 work on the common case.
-    uint8_t *o = g_scratch;
+    //
+    // The frame is built past the reserved header space so the outer ZMTP
+    // header can be written immediately in front of it and the whole thing
+    // sent with one write(). Outer flags are 0: LARGE is decided on the
+    // *expanded* length (Appendix C pitfall 5).
+    uint8_t *o = g_scratch + ZMTP_HDR_MAX;
     o[0] = 7;
     memcpy(o + 1, "MESSAGE", 7);
     put_u64_be(o + 8, n);
@@ -363,9 +368,18 @@ bool ZmtpSession::curve_send(const uint8_t *data, size_t len, uint8_t flags) {
     if (len)
       memcpy(o + MSG_PROLOGUE + 1, data, len);
     secretbox_seal(o + 16, o + MSG_PROLOGUE, len + 1, nonce, _curve.precom);
+    uint8_t hdr[ZMTP_HDR_MAX];
+    const size_t hlen = zmtp_encode_raw_header(hdr, wire, 0);
+    uint8_t *start = o - hlen;
+    memcpy(start, hdr, hlen);
     ++_curve.nonce_out;
-    return _t.write(o, wire);
+    return _t.write(start, hlen + wire);
   }
+
+  // The two-pass path streams, so it cannot coalesce; it writes its own
+  // outer header first.
+  if (!zmtp_write_raw_header(_t, wire, 0))
+    return false;
 
   // Two-pass path, for the blob publish overload. The payload is never
   // copied into a buffer of ours, so RAM does not scale with blob size --
@@ -373,8 +387,8 @@ bool ZmtpSession::curve_send(const uint8_t *data, size_t len, uint8_t flags) {
   // not run, so g_scratch is free: the prologue and the chunk buffer are
   // carved out of it rather than costing either stack or new .bss.
   constexpr size_t CHUNK = 64;
-  uint8_t *head = g_scratch;
-  uint8_t *chunk = g_scratch + MSG_PROLOGUE;
+  uint8_t *head = g_scratch + ZMTP_HDR_MAX;
+  uint8_t *chunk = head + MSG_PROLOGUE;
 
   g_seal.init(_curve.precom, nonce);
   g_seal.absorb(&logical, 1);

@@ -31,6 +31,10 @@ namespace Mads {
  * "identical to Phase 1, exactly" rule. Inline, the disabled build folds
  * them back into their single call sites and emits nothing extra.
  */
+/// Largest ZMTP frame header: 1 flag byte + 8 length bytes.
+static constexpr size_t ZMTP_HDR_MAX = 9;
+
+inline size_t zmtp_encode_raw_header(uint8_t *out, uint64_t len, uint8_t flags);
 inline bool zmtp_write_raw_header(Transport &t, uint64_t len, uint8_t flags);
 inline bool zmtp_read_raw_header(Transport &t, uint8_t &flags, uint64_t &len,
                                  uint32_t timeout_ms);
@@ -317,19 +321,28 @@ private:
 // Inline definitions. After the class because they use ZmtpSession's flag
 // constants; see the declarations above for why they are inline at all.
 // ---------------------------------------------------------------------------
-inline bool zmtp_write_raw_header(Transport &t, uint64_t len, uint8_t flags) {
-  uint8_t header[9];
-  size_t hlen;
+/// Serialises a frame header into `out` (which must have room for
+/// ZMTP_HDR_MAX) and returns its length. Split out from the write so a
+/// caller that already holds the whole frame in a buffer can prepend the
+/// header and issue a single Transport::write(). On the UNO R4 WiFi each
+/// write is an SPI round-trip to the ESP32 costing ~9 ms, so the number of
+/// write() calls, not the number of bytes, is what sets publish latency.
+inline size_t zmtp_encode_raw_header(uint8_t *out, uint64_t len,
+                                     uint8_t flags) {
   if (len > 255) {
-    header[0] = static_cast<uint8_t>(flags | ZmtpSession::FLAG_LARGE);
+    out[0] = static_cast<uint8_t>(flags | ZmtpSession::FLAG_LARGE);
     for (int i = 0; i < 8; ++i)
-      header[1 + i] = static_cast<uint8_t>((len >> (8 * (7 - i))) & 0xFF);
-    hlen = 9;
-  } else {
-    header[0] = flags;
-    header[1] = static_cast<uint8_t>(len);
-    hlen = 2;
+      out[1 + i] = static_cast<uint8_t>((len >> (8 * (7 - i))) & 0xFF);
+    return 9;
   }
+  out[0] = flags;
+  out[1] = static_cast<uint8_t>(len);
+  return 2;
+}
+
+inline bool zmtp_write_raw_header(Transport &t, uint64_t len, uint8_t flags) {
+  uint8_t header[ZMTP_HDR_MAX];
+  const size_t hlen = zmtp_encode_raw_header(header, len, flags);
   return t.write(header, hlen);
 }
 
