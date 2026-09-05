@@ -718,6 +718,21 @@ Record, in the commit message, for `examples/uno_r4_sensor` (disabled) and `exam
 (enabled): flash bytes, global RAM bytes, and the delta. Baseline today is ~70 KB flash / ~8.8 KB
 RAM. Expected: **+10-13 KB flash, +~300 B RAM when enabled; 0/0 when disabled.**
 
+*RAM estimate corrected at Phase 5.* The +~300 B guess is roughly 5x too low. Measured on the
+board's toolchain the enabled build costs about **1.4 KB** of RAM:
+
+| item | bytes |
+|---|---|
+| `curve.cpp` `.bss` (scratch 289, sealer 232, keys and cookie 273) | **794** |
+| per `ZmtpSession`: `SecretboxOpen` 256 + `CurveState` 56 + bookkeeping | ~336 |
+| the Agent holds two such sessions (PUB and SUB) | ~672 |
+
+`SecretboxOpen` being 256 bytes on its own is what the estimate missed -- it carries a Salsa20
+keystream block, a Poly1305 context and a 32-byte block-0 cache. Against 32 KB total, with ~8.9 KB
+already in globals, 1.4 KB is comfortable; the number is wrong rather than the design. Note the
+per-session cost is the reason `SecretboxOpen` is a session member and not a static: a session can
+sit mid-frame between calls, and the Agent has two of them.
+
 **Acceptance.** The disabled build's flash and RAM match the Phase 1 numbers **exactly**. Not
 "close" -- exactly. Any difference means crypto code leaked into the disabled path; find it.
 

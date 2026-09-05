@@ -16,6 +16,34 @@ documentation.
 owner's machine, against a live `mads broker` v2.4.3 and a real UNO R4 WiFi), and **Phase 4 is
 done and verified on the wire** (2026-09-05).
 
+### Phase 5 status -- done 2026-09-05
+
+MESSAGE framing (Appendix A.6) is implemented and verified both in-process against a scripted peer
+and live against `mads broker --crypto`: a JSON publish returns through the broker and `mads echo`
+decodes it, and a 1000-byte blob round-trips byte-for-byte over the FLAG_LARGE two-pass path.
+Tamper (tag, ciphertext, nonce), replay, and "skip still authenticates" are all covered.
+
+| quantity | value |
+|---|---|
+| own stack frames, ARM `-Os` | send 88 B, recv_header 120 B, body paths 40-72 B |
+| deepest chain | 968 B (the handshake), 4.7% of the 20436 B gap |
+| blob publish stack, 1 KB vs 16 KB | **identical** -- measured, not argued |
+| disabled build flash | `pub_sub` now **exactly** `main`'s 70024; others +8 |
+| RAM when enabled | **~1.4 KB**, not the plan's ~300 B (Sec 7.3 corrected) |
+| Sec 2 guard budget | **8 of 12** -- Phase 5 spent none and freed one |
+
+Three things worth knowing before Phase 6:
+
+* `send_subscription()` used to write straight to the transport, bypassing `send_frame_raw()`,
+  which under CURVE would have sent subscriptions in clear. Fixed. The plan's "subscriptions need
+  no special handling" is true of their content, not their framing.
+* The plan's suggestion to give `poll()`'s buffer a spare byte, or memmove the payload down by one,
+  is not needed -- `curve_recv_header()` consumes the flags byte with the prologue, so callers see
+  a body of pure payload.
+* The incoming nonce is held until the tag verifies, rather than committed at header time as the
+  plan's step list implies. Committing early would let a forged frame ratchet the counter past
+  legitimate ones.
+
 ### Phase 4 status
 
 `src/mads/curve.{hpp,cpp}`, wired into `ZmtpSession` behind the single mechanism branch Sec 2 asks
