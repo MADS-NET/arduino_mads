@@ -304,6 +304,7 @@ misreading it matters.
 | `CurveError::mac` | wrong `broker.pub` |
 | `set_crypto()` returns false | a key is not valid Z85 — check for stray spaces, quotes or a missing character |
 | link stops recovering after a while | see below |
+| data arrives (`mads echo` sees it) but the board is absent from `mads top` | expected — this library publishes data but does not send the `agent_event` announcement that `mads top` builds its list from |
 
 `agent.last_curve_error()` is the diagnostic; print it when `begin()` fails.
 `examples/crypto_pub` prints a plain-language explanation for each value.

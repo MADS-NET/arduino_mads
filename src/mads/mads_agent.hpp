@@ -228,6 +228,20 @@ public:
    * Exposed so a sketch can say why it has gone quiet -- a board that has
    * silently slowed to one attempt a minute should be able to report it.
    */
+  /**
+   * The PUB session's outgoing CURVE nonce counter.
+   *
+   * A completed handshake leaves this at 3 -- HELLO took 1 and INITIATE
+   * took 2 -- after which every MESSAGE frame consumes one. Its value right
+   * after a reconnect is the check CURVE_PLAN.md Phase 8 step 5 asks for:
+   * reusing a nonce with a surviving key would be catastrophic, and seeing
+   * it back at 3 confirms the session state really was wiped and
+   * renegotiated rather than carried across the reconnect.
+   */
+  uint64_t curve_nonce_out() const {
+    return _pub_session.curve_state().nonce_out;
+  }
+
   uint32_t curve_backoff() const { return _curve_backoff_ms; }
   uint32_t curve_backoff_max() const { return _curve_backoff_max_ms; }
   void set_curve_backoff_max(uint32_t ms) { _curve_backoff_max_ms = ms; }

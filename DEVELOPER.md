@@ -286,6 +286,12 @@ failed`.
 attached a second late sees nothing, which is indistinguishable from a dead
 board. Print status on a loop, not once in `setup()`.
 
+**The board never appears in `mads top`.** Desktop MADS agents publish an
+`agent_event` announcement at startup, and `mads top` builds its agent list
+from those. This library publishes data only, so its messages arrive
+normally — `mads echo` sees them — while the agent itself is never listed.
+Not a fault; just a missing announcement, and an easy hour to lose to it.
+
 **`mads echo`'s stdout is block-buffered when redirected.** A run killed by a
 signal loses the buffer and looks exactly like a broker that relayed nothing.
 Give it a pty: `script -q /dev/null mads echo --jsonl`.

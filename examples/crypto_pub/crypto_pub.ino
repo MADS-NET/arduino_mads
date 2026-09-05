@@ -227,6 +227,38 @@ void loop() {
   doc["a0"] = analogRead(A0);
 
   bool ok = agent.publish(doc);
+
+#ifdef MADS_ENABLE_CURVE
+  // Announce every recovery, with the nonce counter. A fresh CURVE link
+  // must start from 3 (HELLO took 1, INITIATE took 2); anything else would
+  // mean the session was carried across the reconnect instead of being
+  // renegotiated, which is how nonce reuse happens.
+  static bool was_ok = true;
+  if (ok && !was_ok) {
+    Serial.print(">>> RECONNECTED, nonce_out=");
+    Serial.print((uint32_t)agent.curve_nonce_out());
+    Serial.println(" (3 + 3 per publish since the handshake)");
+  }
+  was_ok = ok;
+#endif
+
+  // Periodic link diagnostic: publish() returning true only means the write
+  // was accepted locally, which is not the same as the broker having it.
+  static uint32_t last_diag = 0;
+  if (millis() - last_diag > 3000) {
+    last_diag = millis();
+    Serial.print("[link] transport.connected=");
+    Serial.print(agent.connected() ? "yes" : "no");
+    Serial.print(" wifi=");
+    Serial.print(WiFi.status() == WL_CONNECTED ? "up" : "down");
+#ifdef MADS_ENABLE_CURVE
+    Serial.print(" nonce_out=");
+    Serial.print((uint32_t)agent.curve_nonce_out());
+#endif
+    Serial.print(" last_publish_ok=");
+    Serial.println(ok ? "yes" : "no");
+  }
+
   Serial.print(ok ? "published " : "publish FAILED ");
   Serial.println(agent.last_publish_json());
 
