@@ -58,8 +58,18 @@ Each drop is a fresh handshake leaving the counter at 3, plus the publishes made
 sample -- so the session really is renegotiated rather than carried across, which is the property
 that makes nonce reuse impossible. 493 publishes, 0 failures: the rebuilds are seamless.
 
-Still open in Phase 8: only step 2's watermark **with the real agent running** (the earlier
-1612-1668 B was the crypto alone, on a sketch that barely touches the heap).
+**Step 2 closed 2026-09-05 -- Phase 8 is complete.** Measured with the real agent publishing
+continuously (`test/hardware/stack_probe`):
+
+| quantity | value |
+|---|---|
+| deepest stack | **1148-1164 B** below `__StackTop` |
+| heap break | `0x20004608`, **unmoved over 600 publishes** |
+| free gap remaining between heap and stack | **~13.4 KB** |
+
+So the stack crosses the 1 KB reservation by ~140 B, harmlessly, and there is over 13 KB of margin
+to the heap. The stable heap break is the other half of the answer: ArduinoJson allocates per
+publish but frees again, so the two ends are not converging.
 
 **Two hardware lessons that cost real time.**
 

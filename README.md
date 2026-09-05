@@ -241,7 +241,7 @@ holding the hardware.
 
 ## How fast can it publish?
 
-Sustained **~29 messages/second** with encryption on, measured on hardware.
+Sustained **~40 messages/second** with encryption on, measured on hardware.
 
 The interesting part is where the time goes, because it is not where people
 expect:
@@ -250,17 +250,17 @@ expect:
 |---|---|
 | building the JSON | 62 µs |
 | encrypting it | microseconds |
-| **sending it** | **~35 ms** |
+| **sending it** | **~25 ms** |
 
-**Encryption is not the bottleneck — the WiFi module is.** Every write to the
-network is an SPI round-trip to the on-board ESP32 costing about 4 ms, plus
-about 30 ms of fixed overhead per publish. The library already packs a whole
-publish into a single write for you; that alone took it from 18 to 29
-messages/second.
+**Encryption is not the bottleneck — the WiFi module is.** Every interaction
+with it is an SPI round-trip to the on-board ESP32 in the ~10 ms class:
+checking whether the link is up costs 9.6 ms on its own. The library packs a
+whole publish into a single write and checks liveness at most once a second,
+which together took it from 18 to 40 messages/second.
 
 Practical consequences:
 
-* **Publishing blocks `loop()` for ~35 ms.** Budget for it.
+* **Publishing blocks `loop()` for ~25 ms.** Budget for it.
 * **Don't use `delay()` to pace publishing.** Schedule on `millis()` instead,
   or you pay the delay *and* the publish. `examples/crypto_pub` shows the
   pattern.

@@ -289,6 +289,35 @@ public:
   uint32_t pub_refresh_interval() const { return _pub_refresh_ms; }
 
   /**
+   * Reads and discards whatever the broker has sent down the PUB link,
+   * returning how many bytes went. Normally there is something: a ZMTP XSUB
+   * peer forwards subscription updates to its publishers, and this client
+   * has no use for them.
+   *
+   * Draining is not housekeeping, it is what makes dead-link detection
+   * possible at all. `WiFiClient::connected()` returns 1 immediately when
+   * `available() > 0`, without ever asking the ESP32 -- so one unread byte
+   * left sitting in the receive buffer makes the link look alive forever,
+   * including long after the broker has gone. Emptying the buffer is what
+   * forces connected() to go and ask.
+   */
+  size_t drain_pub();
+
+  /**
+   * How often the PUB link's liveness is actually probed, in ms.
+   * Default 1000; 0 probes on every publish, as this library used to.
+   *
+   * `WiFiClient::connected()` is a round-trip to the ESP32 costing a
+   * measured **9.6 ms** on this board -- roughly a third of a publish. It is
+   * also, on its own, not trustworthy: see set_pub_refresh_interval() for
+   * the broker-restart case it fails to notice. Paying that on every publish
+   * therefore buys very little, and between probes a broken link is still
+   * caught by a failed write and, ultimately, by the refresh timer.
+   */
+  void set_link_check_interval(uint32_t ms) { _link_check_ms = ms; }
+  uint32_t link_check_interval() const { return _link_check_ms; }
+
+  /**
    * Current interval between WiFi *association* attempts, in ms.
    *
    * Rejoining is rate-limited separately from broker reconnection, and backs
@@ -427,6 +456,9 @@ private:
   /// Shared by every ensure_wifi() caller, so the pub, sub and settings
   /// paths cannot each run their own association attempt.
   void reset_wifi_backoff() { _wifi_backoff_ms = _reconnect_interval_ms; }
+  uint32_t _link_check_ms = 1000;
+  uint32_t _last_link_check = 0;
+  bool _pub_assumed_up = false;
   uint32_t _pub_refresh_ms = 60000;
   uint32_t _last_pub_connect = 0;
   uint32_t _wifi_backoff_ms = 1000;

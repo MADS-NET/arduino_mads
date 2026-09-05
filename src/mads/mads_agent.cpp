@@ -39,6 +39,8 @@ bool Agent::begin(const char *ssid, const char *pass, const char *broker_host,
   }
   note_handshake_success();
   _last_pub_connect = millis();
+  _pub_assumed_up = true;
+  _last_link_check = millis();
   return true;
 }
 
@@ -103,8 +105,38 @@ bool Agent::ensure_wifi(uint32_t timeout_ms) {
   return true;
 }
 
+size_t Agent::drain_pub() {
+  size_t total = 0;
+  uint8_t scratch[64];
+  // Bounded: a peer that streams at us must not be able to hold loop()
+  // here. Anything left over is drained on the next pass.
+  for (int i = 0; i < 16 && _pub_transport.available(); ++i) {
+    const int n = _pub_transport.read(scratch, sizeof(scratch), 0);
+    if (n <= 0)
+      break;
+    total += static_cast<size_t>(n);
+  }
+  return total;
+}
+
 bool Agent::ensure_pub_link() {
-  if (_pub_transport.connected()) {
+  // Probing liveness costs ~9.6 ms -- a round-trip to the ESP32, and about a
+  // third of a publish. Between probes, assume the link we last saw up is
+  // still up: a broken one is still caught by a failed write, and by the
+  // refresh timer below. Nothing is given up here that connected() reliably
+  // provided, because it does not reliably provide it.
+  const uint32_t now_ms = millis();
+  bool up;
+  if (_pub_assumed_up && _link_check_ms != 0 &&
+      (now_ms - _last_link_check) < _link_check_ms) {
+    up = true;
+  } else {
+    up = _pub_transport.connected();
+    _last_link_check = now_ms;
+    _pub_assumed_up = up;
+  }
+
+  if (up) {
     // "Connected" is not trustworthy here: after a broker restart the ESP32
     // keeps reporting this socket as established and keeps accepting
     // writes, indefinitely, while nothing is delivered. A PUB socket gets
@@ -115,6 +147,7 @@ bool Agent::ensure_pub_link() {
         (millis() - _last_pub_connect) < _pub_refresh_ms)
       return true;
     _pub_transport.close();
+    _pub_assumed_up = false;
   }
   if (!_broker_host)
     return false;
@@ -151,6 +184,8 @@ bool Agent::ensure_pub_link() {
   }
   note_handshake_success();
   _last_pub_connect = millis();
+  _pub_assumed_up = true;
+  _last_link_check = millis();
   return true;
 }
 
@@ -392,6 +427,7 @@ bool Agent::publish(const char *json, size_t json_len, const char *topic) {
     // rather than writing more frames into a half-dead connection (which
     // would also desynchronise the peer's frame parser mid-message).
     _pub_transport.close();
+    _pub_assumed_up = false;
   }
   return sent;
 }

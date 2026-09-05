@@ -214,29 +214,41 @@ This is the number that surprises people, so it is worth stating plainly:
 |---|---|
 | JSON build | 62 µs |
 | Salsa20/Poly1305 for a publish | microseconds |
-| **one `write()`** | **~4.2 ms** |
-| **fixed, per publish** | **~30.6 ms** |
+| **`WiFiClient::connected()`** | **9.6 ms** |
 | `Serial.println` of one ~85-char line | 8.2 ms |
 
-On this board a `write()` is an SPI round-trip to the ESP32-S3. Solving
-`cost = fixed + n × per_write` from two measured points (6 writes → 55.8 ms,
-1 write → 34.8 ms) gives the table above.
+Every interaction with the WiFi module is an SPI round-trip to the ESP32 in
+the ~10 ms class. That, not the cryptography, is what a publish costs.
 
-| version | writes per publish | `publish()` | sustained |
-|---|---|---|---|
-| one frame at a time | 6 | 55.8 ms | 17.9 Hz |
-| header+body coalesced | 3 | — | — |
-| all three frames batched | **1** | **34.8 ms** | **28.7 Hz** |
+| version | writes | `connected()` per publish | `publish()` | sustained |
+|---|---|---|---|---|
+| one frame at a time | 6 | yes | 55.8 ms | 17.9 Hz |
+| header+body coalesced | 3 | yes | — | — |
+| all three frames batched | 1 | yes | 34.8 ms | 28.7 Hz |
+| liveness probe rate-limited | 1 | no | **24.9 ms** | **40.1 Hz** |
 
 `send_frames3()` encrypts topic, MADS header and payload into one buffer and
 issues a single write, falling back to three separate sends — without
 consuming a nonce — if they would not fit.
 
-**The remaining ~30.6 ms is not write count.** The likely candidate is
-`ensure_pub_link()` calling `Transport::connected()` on every publish, itself
-an ESP32 round-trip. Removing it would trade latency against noticing a dead
-link later, so it is a reliability decision rather than a free win, and has
-deliberately not been made.
+`connected()` was measured at 9.6 ms, and removing it from the hot path
+saved 9.9 ms, which is as close to confirmation of the model as this gets.
+It is now probed at most once a second
+(`set_link_check_interval()`); between probes a broken link is still caught
+by a failed write and by the refresh timer. Nothing reliable was given up,
+because `connected()` is not reliable — see below.
+
+Roughly 21 ms remains, and it is very likely more of the same: `write()` is
+another modem round-trip. Worth attacking only if someone needs more than
+40 Hz.
+
+**`connected()` cannot detect a dead link.** After a broker restart it went
+on reporting the socket as established for over two minutes while 746
+publishes were accepted and none delivered. Two mechanisms conspire: it
+returns 1 immediately whenever `available() > 0`, without asking the ESP32
+at all, and when it does ask, the ESP32 believes the socket is fine. A PUB
+socket has no reply traffic to time out on, so the only defence is rebuilding
+the link periodically — `set_pub_refresh_interval()`, default 60 s.
 
 Blob chunking follows the same logic: the plan suggested 64-byte chunks,
 which predates knowing what a write costs. At 64 bytes a 16 KB blob is 256
