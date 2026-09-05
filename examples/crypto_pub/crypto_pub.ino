@@ -35,7 +35,12 @@
 const char *WIFI_SSID = SECRET_WIFI_SSID;
 const char *WIFI_PASS = SECRET_WIFI_PASS;
 const char *BROKER_HOST = SECRET_BROKER_HOST;
-const uint16_t SETTINGS_PORT = 9092; // mads.ini [broker] settings_address port
+// mads.ini [broker] settings_address port. Override it in arduino_secrets.h
+// (#define SECRET_SETTINGS_PORT 9192) when the broker is not on the default.
+#ifndef SECRET_SETTINGS_PORT
+#define SECRET_SETTINGS_PORT 9092
+#endif
+const uint16_t SETTINGS_PORT = SECRET_SETTINGS_PORT;
 
 Mads::Agent agent;
 JsonDocument doc;

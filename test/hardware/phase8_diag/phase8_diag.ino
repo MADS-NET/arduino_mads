@@ -59,11 +59,23 @@ static char *paint_floor() {
 static void paint_stack() {
   char here;
   char *lo = paint_floor();
-  // Stop well below the live frame: the stack grows down, so &here is
-  // roughly the current stack pointer and anything at or above it is live.
-  char *hi = &here - 256;
+  // Interrupts push onto this same stack on Cortex-M, *below* the current
+  // SP -- which is exactly the region being painted here. A hard-float
+  // exception frame is up to 104 bytes before the handler's own frame, and
+  // this loop sweeps ~20 KB, so an ISR firing mid-sweep would have its live
+  // frame overwritten: a corrupted return address, and a board that hangs
+  // some time later with USB still enumerated. That is not hypothetical --
+  // it is what wedged the board on 2026-09-05 and cost a physical reset.
+  //
+  // So: mask interrupts for the sweep (~0.4 ms at 48 MHz, short enough not
+  // to disturb USB), and leave a guard far wider than any plausible nested
+  // frame. The watermark read afterwards deliberately still *includes* ISR
+  // stack use, which is what we want to measure.
+  char *hi = &here - 1024;
+  noInterrupts();
   for (char *p = lo; p + 4 <= hi; p += 4)
     *reinterpret_cast<uint32_t *>(p) = PAINT;
+  interrupts();
 }
 
 // Deepest stack penetration since paint_stack(), as bytes below __StackTop.
